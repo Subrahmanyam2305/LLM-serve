@@ -1,0 +1,3 @@
+# vLLM dependencies
+vllm>=0.4.0
+transformers>=4.56.0
