@@ -31,6 +31,8 @@ class BenchmarkResult:
     avg_tokens_per_request: float
     total_tokens_generated: int
     gpu_memory_mb: Optional[float] = None
+    ttft_ms: Optional[float] = None  # Time to first token
+    itl_ms: Optional[float] = None   # Inter-token latency
 
 
 @dataclass
@@ -314,6 +316,17 @@ def parse_args():
                         help="Output file for results")
     parser.add_argument("--prompts_file", type=str, default=None,
                         help="JSON file with test prompts")
+    # ShareGPT options
+    parser.add_argument("--sharegpt", action="store_true",
+                        help="Use ShareGPT dataset for prompts")
+    parser.add_argument("--sharegpt_json", type=str, default=None,
+                        help="Path to local ShareGPT JSON file")
+    parser.add_argument("--sharegpt_split", type=str, default="train",
+                        help="ShareGPT dataset split to use")
+    parser.add_argument("--max_prompts", type=int, default=None,
+                        help="Maximum number of prompts to use (for subset testing)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for prompt sampling")
     return parser.parse_args()
 
 
@@ -329,12 +342,31 @@ def main():
         "How does a neural network learn from data?",
     ]
     
-    # Load custom prompts if provided
-    if args.prompts_file and Path(args.prompts_file).exists():
+    # Load prompts based on source
+    if args.sharegpt:
+        # Load from ShareGPT dataset
+        from load_sharegpt import load_sharegpt
+        prompts = load_sharegpt(
+            max_prompts=args.max_prompts,
+            json_path=args.sharegpt_json,
+            split=args.sharegpt_split,
+            seed=args.seed,
+        )
+        if not prompts:
+            print("WARNING: No prompts loaded from ShareGPT, using defaults")
+            prompts = default_prompts
+    elif args.prompts_file and Path(args.prompts_file).exists():
+        # Load from custom prompts file
         with open(args.prompts_file) as f:
             prompts = json.load(f)
+        if args.max_prompts and args.max_prompts < len(prompts):
+            import random
+            random.seed(args.seed)
+            prompts = random.sample(prompts, args.max_prompts)
     else:
         prompts = default_prompts
+    
+    print(f"[Benchmark] Using {len(prompts)} prompts")
     
     config = BenchmarkConfig(
         model_path=args.model_path,

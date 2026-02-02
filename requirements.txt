@@ -4,6 +4,7 @@ transformers>=4.56.0
 huggingface_hub
 safetensors
 numpy
+datasets  # For ShareGPT loading
 
 # TensorRT-LLM (install separately via pip install tensorrt-llm)
 # tensorrt-llm>=1.0.0
@@ -19,3 +20,6 @@ pandas
 matplotlib
 seaborn
 tqdm
+
+# GenAI-Bench (optional, for advanced benchmarking UI)
+# genai-bench
