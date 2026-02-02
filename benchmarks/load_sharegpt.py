@@ -43,29 +43,19 @@ def load_sharegpt_from_hf(
     
     print(f"[ShareGPT] Loading dataset from HuggingFace...")
     
-    # Try multiple dataset sources
-    dataset_sources = [
-        "Aeala/ShareGPT_Vicuna_unfiltered",
-        "anon8231489123/ShareGPT_Vicuna_unfiltered",
-    ]
+    # Use the original ShareGPT dataset
+    dataset_source = "anon8231489123/ShareGPT_Vicuna_unfiltered"
     
-    dataset = None
-    for source in dataset_sources:
-        try:
-            print(f"[ShareGPT] Trying {source}...")
-            dataset = load_dataset(
-                source,
-                split=split,
-                trust_remote_code=True,
-            )
-            print(f"[ShareGPT] Successfully loaded from {source}")
-            break
-        except Exception as e:
-            print(f"[ShareGPT] Failed to load from {source}: {e}")
-            continue
-    
-    if dataset is None:
-        raise RuntimeError("Failed to load ShareGPT dataset from any source")
+    try:
+        print(f"[ShareGPT] Loading from {dataset_source}...")
+        dataset = load_dataset(
+            dataset_source,
+            split=split,
+            trust_remote_code=True,
+        )
+        print(f"[ShareGPT] Successfully loaded from {dataset_source}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load ShareGPT dataset: {e}")
     
     prompts = []
     for item in dataset:
