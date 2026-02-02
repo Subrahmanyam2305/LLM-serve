@@ -71,38 +71,55 @@ To ensure fair benchmarking across all three engines, we standardize:
 
 ## Installation
 
-### Option 1: Single Environment (Quick Testing)
+### Separate Environments (Recommended)
+
+These frameworks have conflicting dependencies. Use separate virtual environments for accurate benchmarking.
+
+**Important**: Set a custom temp directory to avoid running out of space during installation:
 
 ```bash
-# Create virtual environment
-python3.12 -m venv .venv
-source .venv/bin/activate
+# Add to ~/.bashrc
+export TMPDIR=/path/to/large/disk/tmp
+export TEMP=$TMPDIR
+export TMP=$TMPDIR
+mkdir -p $TMPDIR
+source ~/.bashrc
+```
 
-# Install all frameworks (may have dependency conflicts)
-pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-llm
+```bash
+# TensorRT-LLM environment (~15GB)
+python3.12 -m venv .venv_trt
+source .venv_trt/bin/activate
+pip install --upgrade pip
+pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-llm transformers sentencepiece tiktoken
+
+# vLLM environment (~10GB)
+python3.12 -m venv .venv_vllm
+source .venv_vllm/bin/activate
+pip install --upgrade pip
 pip install vllm
+
+# SGLang environment (~11GB)
+python3.12 -m venv .venv_sgl
+source .venv_sgl/bin/activate
+pip install --upgrade pip
 pip install "sglang[all]"
 ```
 
-> ⚠️ **Warning**: These frameworks have conflicting dependencies. Use separate environments for production benchmarking.
-
-### Option 2: Separate Environments (Recommended for Accurate Benchmarking)
+### Running with Specific Environment
 
 ```bash
-# TensorRT-LLM environment
-python3.12 -m venv .venv_trt
+# TensorRT-LLM
 source .venv_trt/bin/activate
-pip install --extra-index-url https://pypi.nvidia.com/ tensorrt-llm transformers sentencepiece tiktoken
+python tensorrt/run_trt.py --engine_dir ./engines/trt_qwen2.5_3b_fp16 ...
 
-# vLLM environment
-python3.12 -m venv .venv_vllm
+# vLLM
 source .venv_vllm/bin/activate
-pip install vllm
+python vllm/run_vllm.py --model ./models/Qwen2.5-3B-Instruct ...
 
-# SGLang environment
-python3.12 -m venv .venv_sgl
+# SGLang
 source .venv_sgl/bin/activate
-pip install "sglang[all]"
+python sglang/run_sglang.py --model ./models/Qwen2.5-3B-Instruct ...
 ```
 
 ## Quick Start
@@ -252,10 +269,20 @@ LLM-serve/
 
 ## Requirements
 
-- NVIDIA GPU with CUDA support (tested on A10G, A100)
+- **GPU**: NVIDIA A10G (g5.xlarge) or similar with CUDA support
+  - Compute Capability: 8.6
+  - TensorRT engines are GPU-specific and optimized for A10G
 - Python 3.10+ (3.12 recommended)
 - ~16GB GPU memory for Qwen2.5-3B in FP16
-- ~60GB disk space for all three frameworks
+- ~40GB disk space for all three frameworks
+
+## Hardware Tested
+
+| Instance | GPU | VRAM | Compute Capability |
+|----------|-----|------|-------------------|
+| g5.xlarge | NVIDIA A10G | 24GB | 8.6 |
+
+> **Note**: TensorRT engines built on A10G are optimized for Ampere architecture (SM86). They may not work on different GPU architectures.
 
 ## Status
 
