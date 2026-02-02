@@ -1,0 +1,21 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.56.0
+huggingface_hub
+safetensors
+numpy
+
+# TensorRT-LLM (install separately via pip install tensorrt-llm)
+# tensorrt-llm>=1.0.0
+
+# vLLM
+# vllm>=0.4.0
+
+# SGLang
+# sglang[all]>=0.2.0
+
+# Benchmarking
+pandas
+matplotlib
+seaborn
+tqdm
