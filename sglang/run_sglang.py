@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """
 SGLang inference runner for benchmarking.
-Uses SGLang's offline inference API for batch processing.
+Uses SGLang's Engine API for direct inference without the sgl.function decorator.
 """
 
 import argparse
 import time
-from typing import List
+from typing import List, Tuple
+from dataclasses import dataclass
 
-import sglang as sgl
-from sglang import RuntimeEndpoint
+
+@dataclass
+class BenchmarkMetrics:
+    """Metrics from a benchmark run."""
+    total_latency_ms: float
+    ttft_ms: float  # Time to first token
+    tokens_generated: int
+    throughput_tokens_per_sec: float
+    itl_ms: float  # Inter-token latency (average)
 
 
 def parse_args():
@@ -21,12 +29,12 @@ def parse_args():
                         help="Input text(s) for generation")
     parser.add_argument("--max_output_len", type=int, default=128,
                         help="Maximum output tokens to generate")
-    parser.add_argument("--temperature", type=float, default=1.0,
-                        help="Sampling temperature")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature (0 for greedy)")
     parser.add_argument("--top_p", type=float, default=1.0,
                         help="Top-p sampling parameter")
     parser.add_argument("--top_k", type=int, default=1,
-                        help="Top-k sampling parameter")
+                        help="Top-k sampling parameter (1 for greedy)")
     parser.add_argument("--dtype", type=str, default="float16",
                         choices=["float16", "bfloat16", "float32"],
                         help="Model dtype")
@@ -39,28 +47,42 @@ def parse_args():
     return parser.parse_args()
 
 
-@sgl.function
-def generate_text(s, prompt, max_tokens, temperature, top_p, top_k):
-    """SGLang generation function."""
-    s += prompt
-    s += sgl.gen("response", max_tokens=max_tokens, temperature=temperature, 
-                  top_p=top_p, top_k=top_k)
-
-
-def run_inference_batch(runtime, prompts: List[str], args):
-    """Run batch inference and return outputs with timing."""
+def run_inference_batch(engine, tokenizer, prompts: List[str], args) -> Tuple[list, float, int]:
+    """Run batch inference and return outputs with timing and token count."""
+    import sglang as sgl
+    
+    sampling_params = {
+        "max_new_tokens": args.max_output_len,
+        "temperature": args.temperature if args.temperature > 0 else 0,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+    }
+    
     start_time = time.perf_counter()
     
-    # Run batch inference
-    states = generate_text.run_batch(
-        [{"prompt": p, "max_tokens": args.max_output_len, 
-          "temperature": args.temperature, "top_p": args.top_p, 
-          "top_k": args.top_k} for p in prompts],
-        progress_bar=False
+    # Use engine.generate for direct inference
+    outputs = engine.generate(
+        prompts,
+        sampling_params=sampling_params,
     )
     
     elapsed_time = time.perf_counter() - start_time
-    return states, elapsed_time
+    
+    # Count tokens using tokenizer for accuracy
+    total_tokens = 0
+    for output in outputs:
+        if hasattr(output, 'text'):
+            text = output.text
+        elif isinstance(output, dict) and 'text' in output:
+            text = output['text']
+        else:
+            text = str(output)
+        
+        # Use tokenizer for accurate token count
+        tokens = tokenizer.encode(text, add_special_tokens=False)
+        total_tokens += len(tokens)
+    
+    return outputs, elapsed_time, total_tokens
 
 
 def main():
@@ -69,22 +91,29 @@ def main():
     print(f"[SGLang] Loading model: {args.model}")
     print(f"[SGLang] dtype: {args.dtype}")
     
-    # Initialize SGLang runtime
-    runtime = sgl.Runtime(
+    # Import and initialize SGLang engine
+    import sglang as sgl
+    from transformers import AutoTokenizer
+    
+    # Load tokenizer for accurate token counting
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    
+    # Initialize SGLang engine
+    engine = sgl.Engine(
         model_path=args.model,
         dtype=args.dtype,
         trust_remote_code=True,
     )
-    sgl.set_default_backend(runtime)
     
     prompts = args.input_text
     print(f"[SGLang] Batch size: {len(prompts)}")
+    print(f"[SGLang] Sampling: temperature={args.temperature}, top_p={args.top_p}, top_k={args.top_k}")
     
     if args.benchmark:
         # Warmup
         print(f"\n[Benchmark] Running {args.warmup_runs} warmup iterations...")
         for _ in range(args.warmup_runs):
-            run_inference_batch(runtime, prompts, args)
+            run_inference_batch(engine, tokenizer, prompts, args)
         
         # Benchmark
         print(f"[Benchmark] Running {args.benchmark_runs} benchmark iterations...")
@@ -92,38 +121,42 @@ def main():
         total_tokens = 0
         
         for i in range(args.benchmark_runs):
-            states, elapsed = run_inference_batch(runtime, prompts, args)
-            latencies.append(elapsed)
-            
-            # Count generated tokens
-            for state in states:
-                response = state["response"]
-                # Approximate token count (actual count would need tokenizer)
-                total_tokens += len(response.split()) * 1.3  # rough estimate
+            outputs, elapsed, tokens = run_inference_batch(engine, tokenizer, prompts, args)
+            latencies.append(elapsed * 1000)  # Convert to ms
+            total_tokens += tokens
         
         avg_latency = sum(latencies) / len(latencies)
+        std_latency = (sum((x - avg_latency) ** 2 for x in latencies) / len(latencies)) ** 0.5
         avg_tokens_per_request = total_tokens / (args.benchmark_runs * len(prompts))
-        throughput = total_tokens / sum(latencies)
+        throughput = total_tokens / (sum(latencies) / 1000)
         
         print(f"\n[Benchmark Results]")
         print(f"  Batch size: {len(prompts)}")
-        print(f"  Avg latency: {avg_latency*1000:.2f} ms")
+        print(f"  Avg latency: {avg_latency:.2f} ± {std_latency:.2f} ms")
         print(f"  Avg tokens/request: {avg_tokens_per_request:.1f}")
-        print(f"  Throughput: {throughput:.2f} tokens/sec (estimated)")
+        print(f"  Throughput: {throughput:.2f} tokens/sec")
         
     else:
         # Single inference run
-        states, elapsed = run_inference_batch(runtime, prompts, args)
+        outputs, elapsed, tokens = run_inference_batch(engine, tokenizer, prompts, args)
         
         print(f"\n[Results] (inference time: {elapsed*1000:.2f} ms)")
-        for i, (prompt, state) in enumerate(zip(prompts, states)):
-            generated_text = state["response"]
+        for i, (prompt, output) in enumerate(zip(prompts, outputs)):
+            if hasattr(output, 'text'):
+                generated_text = output.text
+            elif isinstance(output, dict) and 'text' in output:
+                generated_text = output['text']
+            else:
+                generated_text = str(output)
+            
+            num_tokens = len(tokenizer.encode(generated_text, add_special_tokens=False))
             
             print(f"\nInput [{i}]: {prompt}")
             print(f"Output [{i}]: {generated_text}")
+            print(f"Generated tokens: {num_tokens}")
     
     # Cleanup
-    runtime.shutdown()
+    engine.shutdown()
 
 
 if __name__ == "__main__":
