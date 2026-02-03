@@ -62,6 +62,15 @@ def generate_prompts(batch_size: int, base_prompts: List[str]) -> List[str]:
     return prompts
 
 
+@dataclass
+class StreamingMetrics:
+    """Metrics from a streaming inference run."""
+    total_latency_ms: float
+    ttft_ms: float  # Time to first token
+    itl_ms: float   # Inter-token latency (average)
+    tokens_generated: int
+
+
 class TensorRTBenchmark:
     """Benchmark runner for TensorRT-LLM."""
     
@@ -124,6 +133,71 @@ class TensorRTBenchmark:
             
         return outputs, elapsed, total_tokens
     
+    def run_streaming(self, prompts: List[str], max_tokens: int) -> tuple:
+        """Run inference with streaming to measure TTFT and ITL."""
+        # Tokenize
+        batch_input_ids = []
+        for prompt in prompts:
+            ids = self.tokenizer.encode(prompt, add_special_tokens=True)
+            batch_input_ids.append(torch.tensor(ids, dtype=torch.int32))
+        
+        input_lengths = [len(ids) for ids in batch_input_ids]
+        
+        start_time = time.perf_counter()
+        first_token_time = None
+        token_times = []
+        final_outputs = None
+        
+        with torch.no_grad():
+            outputs_generator = self.runner.generate(
+                batch_input_ids=batch_input_ids,
+                max_new_tokens=max_tokens,
+                end_id=self.end_id,
+                pad_id=self.pad_id,
+                temperature=1.0,
+                top_k=1,
+                output_sequence_lengths=True,
+                return_dict=True,
+                streaming=True,
+            )
+            
+            for outputs in outputs_generator:
+                current_time = time.perf_counter()
+                if first_token_time is None:
+                    first_token_time = current_time
+                token_times.append(current_time)
+                final_outputs = outputs
+            
+            torch.cuda.synchronize()
+        
+        end_time = time.perf_counter()
+        
+        # Calculate metrics
+        total_latency = (end_time - start_time) * 1000
+        ttft = (first_token_time - start_time) * 1000 if first_token_time else total_latency
+        
+        # Count tokens
+        total_tokens = 0
+        if final_outputs:
+            seq_lengths = final_outputs['sequence_lengths']
+            for i, input_len in enumerate(input_lengths):
+                total_tokens += seq_lengths[i][0].item() - input_len
+        
+        # Calculate ITL
+        if len(token_times) > 1:
+            itl = (token_times[-1] - token_times[0]) * 1000 / max(len(token_times) - 1, 1)
+        else:
+            itl = 0
+        
+        metrics = StreamingMetrics(
+            total_latency_ms=total_latency,
+            ttft_ms=ttft,
+            itl_ms=itl,
+            tokens_generated=total_tokens,
+        )
+        
+        return final_outputs, total_latency / 1000, total_tokens, metrics
+    
     def cleanup(self):
         """Cleanup resources."""
         del self.runner
@@ -164,6 +238,52 @@ class VLLMBenchmark:
         total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
         return outputs, elapsed, total_tokens
     
+    def run_streaming(self, prompts: List[str], max_tokens: int) -> tuple:
+        """Run inference with streaming to measure TTFT and ITL."""
+        from vllm import SamplingParams
+        
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=0.0,  # Greedy for reproducibility
+        )
+        
+        start_time = time.perf_counter()
+        first_token_time = None
+        token_times = []
+        outputs_list = []
+        
+        # Use streaming to capture TTFT
+        for request_output in self.llm.generate(prompts, sampling_params, use_tqdm=False):
+            current_time = time.perf_counter()
+            if first_token_time is None and request_output.outputs[0].token_ids:
+                first_token_time = current_time
+            token_times.append(current_time)
+            outputs_list.append(request_output)
+        
+        end_time = time.perf_counter()
+        
+        # Calculate metrics
+        total_latency = (end_time - start_time) * 1000  # ms
+        ttft = (first_token_time - start_time) * 1000 if first_token_time else total_latency
+        
+        # Count tokens from final outputs
+        total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs_list)
+        
+        # Calculate ITL (inter-token latency)
+        if len(token_times) > 1:
+            itl = (token_times[-1] - token_times[0]) * 1000 / max(len(token_times) - 1, 1)
+        else:
+            itl = 0
+        
+        metrics = StreamingMetrics(
+            total_latency_ms=total_latency,
+            ttft_ms=ttft,
+            itl_ms=itl,
+            tokens_generated=total_tokens,
+        )
+        
+        return outputs_list, total_latency / 1000, total_tokens, metrics
+    
     def cleanup(self):
         """Cleanup resources."""
         del self.llm
@@ -177,16 +297,24 @@ class SGLangBenchmark:
         self.model_path = model_path
         self.dtype = dtype
         self.runtime = None
+        self.tokenizer = None
         
     def setup(self):
         """Initialize SGLang runtime."""
         import sglang as sgl
+        from transformers import AutoTokenizer
+        
         self.runtime = sgl.Runtime(
             model_path=self.model_path,
             dtype=self.dtype,
             trust_remote_code=True,
         )
         sgl.set_default_backend(self.runtime)
+        
+        # Load tokenizer for accurate token counting
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_path, trust_remote_code=True
+        )
         
     def run(self, prompts: List[str], max_tokens: int) -> tuple:
         """Run inference and return (outputs, latency, tokens_generated)."""
@@ -204,9 +332,81 @@ class SGLangBenchmark:
         )
         elapsed = time.perf_counter() - start
         
-        # Estimate tokens (would need tokenizer for exact count)
-        total_tokens = sum(len(s["response"].split()) for s in states)
+        # Use tokenizer for accurate token count
+        total_tokens = sum(
+            len(self.tokenizer.encode(s["response"])) for s in states
+        )
         return states, elapsed, total_tokens
+    
+    def run_streaming(self, prompts: List[str], max_tokens: int) -> tuple:
+        """Run inference with streaming to measure TTFT and ITL."""
+        import sglang as sgl
+        
+        # SGLang streaming via Engine.generate with stream=True
+        start_time = time.perf_counter()
+        first_token_time = None
+        token_times = []
+        all_responses = []
+        
+        # Process each prompt individually for streaming
+        for prompt in prompts:
+            prompt_start = time.perf_counter()
+            prompt_first_token = None
+            response_text = ""
+            
+            # Use the runtime's generate method with streaming
+            try:
+                for chunk in self.runtime.generate(
+                    prompt,
+                    sampling_params={"max_new_tokens": max_tokens, "temperature": 0.0},
+                    stream=True,
+                ):
+                    current_time = time.perf_counter()
+                    if prompt_first_token is None:
+                        prompt_first_token = current_time
+                        if first_token_time is None:
+                            first_token_time = current_time
+                    token_times.append(current_time)
+                    response_text = chunk.get("text", response_text)
+                
+                all_responses.append(response_text)
+            except Exception:
+                # Fallback to non-streaming if streaming not supported
+                @sgl.function
+                def gen(s, prompt, max_tokens):
+                    s += prompt
+                    s += sgl.gen("response", max_tokens=max_tokens)
+                
+                state = gen.run(prompt=prompt, max_tokens=max_tokens)
+                all_responses.append(state["response"])
+                if first_token_time is None:
+                    first_token_time = time.perf_counter()
+        
+        end_time = time.perf_counter()
+        
+        # Calculate metrics
+        total_latency = (end_time - start_time) * 1000
+        ttft = (first_token_time - start_time) * 1000 if first_token_time else total_latency
+        
+        # Count tokens
+        total_tokens = sum(
+            len(self.tokenizer.encode(resp)) for resp in all_responses
+        )
+        
+        # Calculate ITL
+        if len(token_times) > 1:
+            itl = (token_times[-1] - token_times[0]) * 1000 / max(len(token_times) - 1, 1)
+        else:
+            itl = 0
+        
+        metrics = StreamingMetrics(
+            total_latency_ms=total_latency,
+            ttft_ms=ttft,
+            itl_ms=itl,
+            tokens_generated=total_tokens,
+        )
+        
+        return all_responses, total_latency / 1000, total_tokens, metrics
     
     def cleanup(self):
         """Cleanup resources."""
@@ -219,13 +419,14 @@ def run_benchmark(
     benchmark_cls,
     config: BenchmarkConfig,
     engine_name: str,
+    streaming: bool = False,
     **init_kwargs
 ) -> List[BenchmarkResult]:
     """Run benchmarks for a single engine across all batch sizes."""
     results = []
     
     print(f"\n{'='*60}")
-    print(f"Benchmarking: {engine_name}")
+    print(f"Benchmarking: {engine_name}" + (" (streaming)" if streaming else ""))
     print(f"{'='*60}")
     
     for batch_size in config.batch_sizes:
@@ -245,7 +446,10 @@ def run_benchmark(
         print(f"  Warming up ({config.num_warmup} runs)...")
         for _ in range(config.num_warmup):
             try:
-                benchmark.run(prompts, config.max_output_tokens)
+                if streaming and hasattr(benchmark, 'run_streaming'):
+                    benchmark.run_streaming(prompts, config.max_output_tokens)
+                else:
+                    benchmark.run(prompts, config.max_output_tokens)
             except Exception as e:
                 print(f"  ERROR during warmup: {e}")
                 break
@@ -254,20 +458,37 @@ def run_benchmark(
         print(f"  Running benchmark ({config.num_runs} runs)...")
         latencies = []
         total_tokens = 0
+        ttfts = []
+        itls = []
         
         torch.cuda.reset_peak_memory_stats()
         
         for i in range(config.num_runs):
             try:
-                _, elapsed, tokens = benchmark.run(prompts, config.max_output_tokens)
-                latencies.append(elapsed * 1000)  # Convert to ms
-                total_tokens += tokens
+                if streaming and hasattr(benchmark, 'run_streaming'):
+                    _, elapsed, tokens, metrics = benchmark.run_streaming(
+                        prompts, config.max_output_tokens
+                    )
+                    latencies.append(elapsed * 1000)  # Convert to ms
+                    total_tokens += tokens
+                    ttfts.append(metrics.ttft_ms)
+                    itls.append(metrics.itl_ms)
+                else:
+                    _, elapsed, tokens = benchmark.run(prompts, config.max_output_tokens)
+                    latencies.append(elapsed * 1000)  # Convert to ms
+                    total_tokens += tokens
             except Exception as e:
                 print(f"  ERROR on run {i}: {e}")
+                import traceback
+                traceback.print_exc()
                 break
         
         if latencies:
             gpu_mem = get_gpu_memory_mb()
+            
+            # Calculate average TTFT and ITL if streaming
+            avg_ttft = statistics.mean(ttfts) if ttfts else None
+            avg_itl = statistics.mean(itls) if itls else None
             
             result = BenchmarkResult(
                 engine=engine_name,
@@ -281,12 +502,18 @@ def run_benchmark(
                 avg_tokens_per_request=total_tokens / (len(latencies) * batch_size),
                 total_tokens_generated=total_tokens,
                 gpu_memory_mb=gpu_mem,
+                ttft_ms=avg_ttft,
+                itl_ms=avg_itl,
             )
             results.append(result)
             
             print(f"  Results:")
             print(f"    Avg latency: {result.avg_latency_ms:.2f} ± {result.std_latency_ms:.2f} ms")
             print(f"    Throughput: {result.throughput_tokens_per_sec:.2f} tokens/sec")
+            if avg_ttft is not None:
+                print(f"    TTFT: {avg_ttft:.2f} ms")
+            if avg_itl is not None:
+                print(f"    ITL: {avg_itl:.2f} ms")
             print(f"    GPU memory: {result.gpu_memory_mb:.0f} MB")
         
         benchmark.cleanup()
@@ -327,6 +554,8 @@ def parse_args():
                         help="Maximum number of prompts to use (for subset testing)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for prompt sampling")
+    parser.add_argument("--streaming", action="store_true",
+                        help="Use streaming mode to measure TTFT and ITL")
     return parser.parse_args()
 
 
@@ -367,6 +596,8 @@ def main():
         prompts = default_prompts
     
     print(f"[Benchmark] Using {len(prompts)} prompts")
+    if args.streaming:
+        print(f"[Benchmark] Streaming mode enabled (measuring TTFT and ITL)")
     
     config = BenchmarkConfig(
         model_path=args.model_path,
@@ -387,6 +618,7 @@ def main():
                 TensorRTBenchmark,
                 config,
                 "TensorRT-LLM",
+                streaming=args.streaming,
                 engine_dir=args.trt_engine_dir,
                 tokenizer_dir=args.model_path,
             )
@@ -401,6 +633,7 @@ def main():
                 VLLMBenchmark,
                 config,
                 "vLLM",
+                streaming=args.streaming,
                 model_path=args.model_path,
             )
             all_results.extend(results)
@@ -414,6 +647,7 @@ def main():
                 SGLangBenchmark,
                 config,
                 "SGLang",
+                streaming=args.streaming,
                 model_path=args.model_path,
             )
             all_results.extend(results)
@@ -440,11 +674,20 @@ def main():
     
     # Print summary table
     print("\nSummary:")
-    print("-" * 80)
-    print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
-    print("-" * 80)
-    for r in all_results:
-        print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
+    if args.streaming:
+        print("-" * 110)
+        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<18} {'TTFT (ms)':<12} {'ITL (ms)':<12}")
+        print("-" * 110)
+        for r in all_results:
+            ttft_str = f"{r.ttft_ms:.2f}" if r.ttft_ms is not None else "N/A"
+            itl_str = f"{r.itl_ms:.2f}" if r.itl_ms is not None else "N/A"
+            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>16.2f} {ttft_str:>12} {itl_str:>12}")
+    else:
+        print("-" * 80)
+        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
+        print("-" * 80)
+        for r in all_results:
+            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
 
 
 if __name__ == "__main__":
