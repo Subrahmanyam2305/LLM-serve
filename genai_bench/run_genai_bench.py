@@ -145,9 +145,10 @@ def run_benchmark(args) -> Optional[Path]:
         "--max-requests-per-run", str(args.max_requests),
     ]
     
-    # Add concurrency levels
+    # Add concurrency levels (genai-bench uses --num-concurrency)
+    cmd.append("--num-concurrency")
     for c in args.concurrency:
-        cmd.extend(["--concurrency", str(c)])
+        cmd.append(str(c))
     
     print(f"Running: {' '.join(cmd[:15])}...")
     
