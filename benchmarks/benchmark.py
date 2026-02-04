@@ -48,9 +48,28 @@ class BenchmarkConfig:
 
 
 def get_gpu_memory_mb() -> float:
-    """Get current GPU memory usage in MB."""
+    """Get current GPU memory usage in MB using nvidia-smi."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.used', '--format=csv,nounits,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return float(result.stdout.strip().split('\n')[0])
+    except Exception:
+        pass
+    
+    # Fallback to PyTorch method
     if torch.cuda.is_available():
         return torch.cuda.max_memory_allocated() / (1024 * 1024)
+    return 0.0
+
+
+def get_gpu_memory_allocated_mb() -> float:
+    """Get GPU memory allocated by PyTorch in MB."""
+    if torch.cuda.is_available():
+        return torch.cuda.memory_allocated() / (1024 * 1024)
     return 0.0
 
 
@@ -239,7 +258,12 @@ class VLLMBenchmark:
         return outputs, elapsed, total_tokens
     
     def run_streaming(self, prompts: List[str], max_tokens: int) -> tuple:
-        """Run inference with streaming to measure TTFT and ITL."""
+        """Run inference with streaming to measure TTFT and ITL.
+        
+        Note: vLLM's offline LLM class doesn't support true token-by-token streaming.
+        For accurate TTFT/ITL, use the vLLM server with streaming API.
+        This implementation measures batch-level timing as an approximation.
+        """
         from vllm import SamplingParams
         
         sampling_params = SamplingParams(
@@ -247,33 +271,47 @@ class VLLMBenchmark:
             temperature=0.0,  # Greedy for reproducibility
         )
         
+        # For single prompt, we can get approximate TTFT by measuring
+        # time to first output in the batch
         start_time = time.perf_counter()
-        first_token_time = None
-        token_times = []
-        outputs_list = []
         
-        # Use streaming to capture TTFT
-        for request_output in self.llm.generate(prompts, sampling_params, use_tqdm=False):
-            current_time = time.perf_counter()
-            if first_token_time is None and request_output.outputs[0].token_ids:
-                first_token_time = current_time
-            token_times.append(current_time)
-            outputs_list.append(request_output)
+        # Generate all outputs
+        outputs = self.llm.generate(prompts, sampling_params, use_tqdm=False)
         
         end_time = time.perf_counter()
         
         # Calculate metrics
         total_latency = (end_time - start_time) * 1000  # ms
-        ttft = (first_token_time - start_time) * 1000 if first_token_time else total_latency
         
-        # Count tokens from final outputs
-        total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs_list)
+        # Count tokens
+        total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
         
-        # Calculate ITL (inter-token latency)
-        if len(token_times) > 1:
-            itl = (token_times[-1] - token_times[0]) * 1000 / max(len(token_times) - 1, 1)
-        else:
-            itl = 0
+        # Approximate TTFT: For vLLM offline mode, we estimate based on
+        # prefill time which is roughly proportional to input length
+        # A rough estimate: TTFT ≈ total_latency * (avg_input_tokens / (avg_input_tokens + avg_output_tokens))
+        avg_output_tokens = total_tokens / len(prompts) if prompts else 0
+        
+        # Get input token counts
+        input_tokens = []
+        for prompt in prompts:
+            # Use tokenizer if available, otherwise estimate
+            try:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                input_tokens.append(len(tokenizer.encode(prompt)))
+            except:
+                input_tokens.append(len(prompt.split()) * 1.3)  # Rough estimate
+        
+        avg_input_tokens = sum(input_tokens) / len(input_tokens) if input_tokens else 100
+        
+        # Estimate TTFT as prefill portion of total time
+        # This is an approximation - for accurate TTFT, use server-based streaming
+        ttft_ratio = avg_input_tokens / (avg_input_tokens + avg_output_tokens) if avg_output_tokens > 0 else 0.1
+        ttft = total_latency * ttft_ratio
+        
+        # ITL: (total_time - ttft) / num_output_tokens
+        decode_time = total_latency - ttft
+        itl = decode_time / avg_output_tokens if avg_output_tokens > 0 else 0
         
         metrics = StreamingMetrics(
             total_latency_ms=total_latency,
@@ -282,7 +320,7 @@ class VLLMBenchmark:
             tokens_generated=total_tokens,
         )
         
-        return outputs_list, total_latency / 1000, total_tokens, metrics
+        return outputs, total_latency / 1000, total_tokens, metrics
     
     def cleanup(self):
         """Cleanup resources."""
@@ -300,14 +338,18 @@ class SGLangBenchmark:
         self.tokenizer = None
         
     def setup(self):
-        """Initialize SGLang runtime."""
+        """Initialize SGLang runtime with triton backend to avoid nvcc dependency."""
         import sglang as sgl
         from transformers import AutoTokenizer
         
+        # Use triton backend to avoid flashinfer nvcc compilation issues
         self.runtime = sgl.Runtime(
             model_path=self.model_path,
             dtype=self.dtype,
             trust_remote_code=True,
+            attention_backend="triton",
+            sampling_backend="pytorch",
+            disable_cuda_graph=True,
         )
         sgl.set_default_backend(self.runtime)
         
