@@ -29,8 +29,14 @@ def parse_args():
                         help="Number of GPUs for tensor parallelism")
     parser.add_argument("--api-key", type=str, default="EMPTY",
                         help="API key for authentication")
-    parser.add_argument("--disable-cuda-graph", action="store_true",
-                        help="Disable CUDA graph for debugging")
+    parser.add_argument("--disable-cuda-graph", action="store_true", default=True,
+                        help="Disable CUDA graph (default: True to avoid flashinfer JIT issues)")
+    parser.add_argument("--attention-backend", type=str, default="triton",
+                        choices=["flashinfer", "triton", "torch_native"],
+                        help="Attention backend (default: triton to avoid nvcc dependency)")
+    parser.add_argument("--sampling-backend", type=str, default="pytorch",
+                        choices=["flashinfer", "pytorch"],
+                        help="Sampling backend (default: pytorch to avoid nvcc dependency)")
     return parser.parse_args()
 
 
@@ -44,6 +50,9 @@ def main():
     print(f"Host: {args.host}:{args.port}")
     print(f"Dtype: {args.dtype}")
     print(f"Memory Fraction: {args.mem_fraction_static}")
+    print(f"Attention Backend: {args.attention_backend}")
+    print(f"Sampling Backend: {args.sampling_backend}")
+    print(f"CUDA Graph: {'Disabled' if args.disable_cuda_graph else 'Enabled'}")
     print("=" * 60)
     
     # Build command
@@ -68,6 +77,10 @@ def main():
     
     if args.disable_cuda_graph:
         cmd.append("--disable-cuda-graph")
+    
+    # Add attention and sampling backends to avoid flashinfer JIT compilation issues
+    cmd.extend(["--attention-backend", args.attention_backend])
+    cmd.extend(["--sampling-backend", args.sampling_backend])
     
     print(f"\nStarting server with command:")
     print(" ".join(cmd))

@@ -26,6 +26,12 @@ def load_sharegpt_from_hf(
     """
     Load prompts from ShareGPT dataset via HuggingFace datasets.
     
+    Uses the specific file: ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json
+    from anon8231489123/ShareGPT_Vicuna_unfiltered
+    
+    This file removes instances of "I'm sorry" and "do not have the capability"
+    to avoid refusal responses in the training data.
+    
     Args:
         max_prompts: Maximum number of prompts to return (None for all)
         split: Dataset split to use
@@ -43,17 +49,20 @@ def load_sharegpt_from_hf(
     
     print(f"[ShareGPT] Loading dataset from HuggingFace...")
     
-    # Use the original ShareGPT dataset
+    # Use the specific cleaned file that removes refusals
+    # Source: https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered
     dataset_source = "anon8231489123/ShareGPT_Vicuna_unfiltered"
+    data_file = "ShareGPT_V3_unfiltered_cleaned_split_no_imsorry.json"
     
     try:
-        print(f"[ShareGPT] Loading from {dataset_source}...")
+        print(f"[ShareGPT] Loading {data_file} from {dataset_source}...")
         dataset = load_dataset(
             dataset_source,
+            data_files=data_file,
             split=split,
             trust_remote_code=True,
         )
-        print(f"[ShareGPT] Successfully loaded from {dataset_source}")
+        print(f"[ShareGPT] Successfully loaded {data_file}")
     except Exception as e:
         raise RuntimeError(f"Failed to load ShareGPT dataset: {e}")
     

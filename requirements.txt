@@ -22,4 +22,4 @@ seaborn
 tqdm
 
 # GenAI-Bench (optional, for advanced benchmarking UI)
-# genai-bench
+genai-bench
