@@ -1,21 +1,14 @@
 # Core dependencies
-torch>=2.0.0
-transformers>=4.56.0
-huggingface_hub
-safetensors
-numpy
+transformers>=4.36.0
+torch>=2.1.0
+numpy>=1.24.0
 
-# TensorRT-LLM (install separately via pip install tensorrt-llm)
-# tensorrt-llm>=1.0.0
+# Triton client for gRPC communication
+tritonclient[grpc]>=2.40.0
 
-# vLLM
-# vllm>=0.4.0
+# Benchmarking tool
+genai-bench>=0.1.0
 
-# SGLang
-# sglang[all]>=0.2.0
-
-# Benchmarking
-pandas
-matplotlib
-seaborn
-tqdm
+# For tokenization
+sentencepiece>=0.1.99
+tiktoken>=0.5.0
