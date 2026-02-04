@@ -237,6 +237,13 @@ parameters: {{
   }}
 }}
 
+parameters: {{
+  key: "guided_decoding_backend"
+  value: {{
+    string_value: ""
+  }}
+}}
+
 instance_group [
   {{
     count: 1
