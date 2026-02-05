@@ -47,7 +47,6 @@ engines/
 
 # Benchmark outputs
 results/
-analysis/
 *.json
 !prompts.json
 
