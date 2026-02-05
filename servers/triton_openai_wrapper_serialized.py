@@ -128,6 +128,9 @@ def streaming_callback(user_data, result, error):
 class OpenAIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for OpenAI-compatible API."""
     
+    # Use HTTP/1.1 for proper streaming support
+    protocol_version = "HTTP/1.1"
+    
     def log_message(self, format, *args):
         """Suppress default logging."""
         pass
@@ -394,17 +397,22 @@ class OpenAIHandler(BaseHTTPRequestHandler):
                 request_id=request_id,
             )
             
-            # Process streaming results - accumulate tokens
-            all_tokens = []
+            # Process streaming results
+            # Note: Triton TensorRT-LLM sends one token per response (not including input tokens)
+            all_output_tokens = []
             generation_complete = False
             start_time = time.time()
+            timeout_count = 0
             
             while not generation_complete and (time.time() - start_time) < 60:
                 try:
                     result = user_data._completed_requests.get(timeout=0.5)
+                    timeout_count = 0  # Reset on successful get
                 except queue.Empty:
-                    # If we have tokens and hit timeout, assume done
-                    if all_tokens:
+                    timeout_count += 1
+                    # If we have output tokens and hit timeout, assume done
+                    if all_output_tokens and timeout_count > 2:
+                        generation_complete = True
                         break
                     continue
                 
@@ -423,7 +431,8 @@ class OpenAIHandler(BaseHTTPRequestHandler):
                     generation_complete = True
                     break
                 
-                all_tokens.extend(tokens)
+                # Each response contains just the new token(s), not input tokens
+                all_output_tokens.extend(tokens)
                 
                 # Decode new tokens and send
                 new_text = tokenizer.decode(tokens, skip_special_tokens=True)
@@ -443,14 +452,17 @@ class OpenAIHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                     self.wfile.flush()
                 
-                # Check if we've hit max_tokens
-                if len(all_tokens) >= max_tokens:
+                # Check if we've hit max_tokens - stop immediately
+                if len(all_output_tokens) >= max_tokens:
                     generation_complete = True
                     break
             
-            # Stop the stream (cancel any pending requests)
+            # Stop the stream immediately
             if triton_client:
-                triton_client.stop_stream(cancel_requests=True)
+                try:
+                    triton_client.stop_stream(cancel_requests=True)
+                except:
+                    pass
             
             # Send final chunk
             final_chunk = {
@@ -540,41 +552,41 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"\n{'='*60}")
-    print("OpenAI-compatible Triton Wrapper")
-    print(f"{'='*60}")
-    print(f"Triton URL: {args.triton_url}")
-    print(f"Tokenizer: {args.tokenizer_dir}")
-    print(f"API Port: {args.port}")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*60}", flush=True)
+    print("OpenAI-compatible Triton Wrapper", flush=True)
+    print(f"{'='*60}", flush=True)
+    print(f"Triton URL: {args.triton_url}", flush=True)
+    print(f"Tokenizer: {args.tokenizer_dir}", flush=True)
+    print(f"API Port: {args.port}", flush=True)
+    print(f"{'='*60}\n", flush=True)
     
     # Test Triton connection
-    print("Testing Triton server connection...")
+    print("Testing Triton server connection...", flush=True)
     test_client = grpcclient.InferenceServerClient(
         url=args.triton_url,
         verbose=False,
     )
     
     if not test_client.is_server_live():
-        print("ERROR: Triton server is not live")
+        print("ERROR: Triton server is not live", flush=True)
         exit(1)
     
     if not test_client.is_model_ready(model_name):
-        print(f"ERROR: Model '{model_name}' is not ready")
+        print(f"ERROR: Model '{model_name}' is not ready", flush=True)
         exit(1)
     
-    print("Triton server connection: OK")
+    print("Triton server connection: OK", flush=True)
     
     # Load tokenizer
-    print(f"Loading tokenizer from {args.tokenizer_dir}...")
+    print(f"Loading tokenizer from {args.tokenizer_dir}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_dir, trust_remote_code=True)
-    print("Tokenizer loaded: OK")
+    print("Tokenizer loaded: OK", flush=True)
     
     # Start server
     server = ThreadedHTTPServer(("0.0.0.0", args.port), OpenAIHandler)
     
-    print(f"\n{'='*60}")
-    print(f"Server running at http://localhost:{args.port}")
+    print(f"\n{'='*60}", flush=True)
+    print(f"Server running at http://localhost:{args.port}", flush=True)
     print(f"OpenAI API endpoint: http://localhost:{args.port}/v1/chat/completions")
     print(f"{'='*60}\n")
     
