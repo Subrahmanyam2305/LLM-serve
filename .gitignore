@@ -47,8 +47,14 @@ engines/
 
 # Benchmark outputs
 results/
+experiments/
 *.json
 !prompts.json
+
+# Keep analysis plots for documentation
+!analysis/
+!analysis/*.png
+!analysis/*.md
 
 # Logs
 *.log
