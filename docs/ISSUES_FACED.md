@@ -21,9 +21,14 @@ This document captures all the issues encountered during the setup and benchmark
    - [TTFT and ITL Metrics Showing None](#11-ttft-and-itl-metrics-showing-none)
    - [Unfair Token Counting](#12-unfair-token-counting)
    - [GenAI-Bench CLI Argument Error](#13-genai-bench-cli-argument-error)
-5. [Environment & Path Issues](#environment--path-issues)
-   - [Virtual Environment Activation in Scripts](#14-virtual-environment-activation-in-scripts)
-   - [HuggingFace Token for Gated Models](#15-huggingface-token-for-gated-models)
+   - [Batch Processing vs True Concurrency](#14-batch-processing-vs-true-concurrency)
+5. [Triton Server Issues](#triton-server-issues)
+   - [TensorRT-LLM Version Compatibility](#15-tensorrt-llm-version-compatibility)
+   - [Triton Model Configuration](#16-triton-model-configuration)
+   - [Streaming Response Handling](#17-streaming-response-handling)
+6. [Environment & Path Issues](#environment--path-issues)
+   - [Virtual Environment Activation in Scripts](#18-virtual-environment-activation-in-scripts)
+   - [HuggingFace Token for Gated Models](#19-huggingface-token-for-gated-models)
 
 ---
 
@@ -551,7 +556,7 @@ This fix is already applied in `benchmark.py`.
 
 ---
 
-### 12. GenAI-Bench CLI Argument Error
+### 13. GenAI-Bench CLI Argument Error
 
 **Symptom:**
 ```
@@ -577,9 +582,92 @@ This fix is applied in `genai_bench/run_genai_bench.py`.
 
 ---
 
+### 14. Batch Processing vs True Concurrency
+
+**Problem:**
+The original `benchmarks/benchmark.py` file used batch processing rather than true concurrent request handling. This led to misleading concurrency metrics because:
+
+- **Batch processing**: Groups multiple prompts together and processes them in a single inference call
+- **True concurrency**: Multiple independent requests arrive asynchronously and are handled by the server's scheduler
+
+**Why this matters:**
+- Batch processing measures GPU utilization and throughput for batched workloads
+- True concurrency measures how the server handles independent requests arriving at different times
+- Production workloads typically involve independent requests, not pre-batched data
+
+**Solution:**
+
+Use Triton Inference Server with TensorRT-LLM backend, which provides:
+- Inflight batching: Dynamically batches requests as they arrive
+- Proper request scheduling with `max_utilization` policy
+- Native support for concurrent gRPC/HTTP requests
+
+---
+
+## Triton Server Issues
+
+### 15. TensorRT-LLM Version Compatibility
+
+**Problem:**
+The TensorRT-LLM engine was built with version 1.1.0, which requires a specific Triton Docker image version.
+
+**Solution:**
+
+Use the compatible Triton Docker image:
+```bash
+nvcr.io/nvidia/tritonserver:25.12-trtllm-python-py3
+```
+
+This image includes TensorRT-LLM 1.1.0 backend support.
+
+---
+
+### 16. Triton Model Configuration
+
+**Problem:**
+The Triton TensorRT-LLM backend requires many configuration parameters that must be set correctly.
+
+**Solution:**
+
+Use the `fill_template.py` script from TensorRT-LLM to generate the config:
+
+```bash
+python /path/to/TensorRT-LLM/triton_backend/tools/fill_template.py \
+    -i /tmp/triton_model_repo/tensorrt_llm/config.pbtxt \
+    "triton_backend:tensorrtllm,triton_max_batch_size:64,decoupled_mode:True,..."
+```
+
+Key parameters:
+- `batching_strategy:inflight_fused_batching` - Enable inflight batching
+- `batch_scheduler_policy:max_utilization` - Maximize GPU utilization
+- `decoupled_mode:True` - Required for streaming responses
+- `tokenizer_dir:/path/to/tokenizer` - Required for tokenization
+
+---
+
+### 17. Streaming Response Handling
+
+**Problem:**
+When using decoupled mode (required for streaming), the Triton server:
+1. Sends tokens one at a time via gRPC streaming
+2. Sends an empty token `[]` when generation completes naturally (EOS)
+3. Does NOT send an empty token when `max_tokens` is reached
+
+This causes issues with detecting end-of-generation in the OpenAI wrapper.
+
+**Current Status:**
+- Non-streaming requests work correctly and are fast (~0.15s for short responses)
+- Streaming requests work but may hang when `max_tokens` is reached before EOS
+- The wrapper includes logic to detect both EOS and max_tokens conditions
+
+**Workaround:**
+For benchmarking, use non-streaming mode or ensure prompts generate responses that hit EOS naturally.
+
+---
+
 ## Environment & Path Issues
 
-### 14. Virtual Environment Activation in Scripts
+### 18. Virtual Environment Activation in Scripts
 
 **Symptom:**
 Scripts fail to find the correct packages even though they're installed.
@@ -613,7 +701,7 @@ Or use the full path to the Python interpreter:
 
 ---
 
-### 15. HuggingFace Token for Gated Models
+### 19. HuggingFace Token for Gated Models
 
 **Symptom:**
 ```
@@ -650,6 +738,23 @@ source ~/.bashrc
 huggingface-cli login
 # Or
 huggingface-cli download meta-llama/Llama-3.2-3B-Instruct --token $HF_TOKEN
+```
+
+---
+
+## Architecture (Triton Setup)
+
+```
+┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
+│   genai-bench   │────▶│  OpenAI Wrapper      │────▶│  Triton Server  │
+│   (HTTP/REST)   │     │  (HTTP → gRPC)       │     │  (gRPC)         │
+└─────────────────┘     └──────────────────────┘     └─────────────────┘
+                                                              │
+                                                              ▼
+                                                     ┌─────────────────┐
+                                                     │  TensorRT-LLM   │
+                                                     │  Engine         │
+                                                     └─────────────────┘
 ```
 
 ---
@@ -700,6 +805,21 @@ pip list | grep -E "tensorrt|vllm|sglang|torch"
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
 
+### Docker Container Management
+```bash
+# View logs
+docker logs triton-trtllm
+
+# Stop server
+docker stop triton-trtllm
+
+# Remove container
+docker rm triton-trtllm
+
+# View running containers
+docker ps
+```
+
 ---
 
 ## Summary Table
@@ -716,6 +836,8 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 | Cached wrong nvcc path | `rm -rf ~/.cache/flashinfer` |
 | TTFT/ITL showing None | Use `--streaming` flag |
 | Gated model access | Set `HF_TOKEN` and accept license |
+| Batch vs concurrency | Use Triton with inflight batching |
+| Triton version mismatch | Use compatible Docker image |
 
 ---
 
