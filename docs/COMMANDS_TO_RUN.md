@@ -66,6 +66,8 @@ python servers/tensorrt_backend_server.py \
     --engine-dir /home/ec2-user/llm_host/trt_engines/fp16_qwen_2.5_3B \
     --tokenizer-dir /home/ec2-user/llm_host/Qwen2.5-3B-Instruct \
     --port 8002
+
+python tensorrt/orchestrate_trt.py --model llama --dtype float16 --run_benchmark --start_triton --sharegpt --max_prompts 100
 ```
 
 ---
@@ -178,4 +180,17 @@ pkill -f "tensorrt_backend_server"
 rm -rf ~/.cache/flashinfer    # Fix nvcc path issues
 rm -rf ~/.cache/huggingface   # Re-download models
 rm -rf $TMPDIR/pip_cache      # Clear pip cache
+```
+
+## Benchmarking commands
+
+```bash
+source .venv_trt/bin/activate
+
+python tensorrt/orchestrate_trt.py --model llama --dtype float16 --run_benchmark --start_triton --sharegpt --max_prompts 100
+
+source .venv_vllm/bin/activate
+
+python benchmarks/benchmark.py --model_path /home/ec2-user/llm_host/LLM-serve/models/Llama-3.2-3B-Instruct --model llama --engines vllm --sharegpt --max_prompts 100 --streaming
+
 ```

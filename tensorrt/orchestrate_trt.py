@@ -11,6 +11,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# Import environment setup
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+try:
+    from setup_environment import setup_temp_directories, clear_gpu_memory, cleanup_old_temps
+except ImportError:
+    print("Warning: Environment setup not available")
+    setup_temp_directories = clear_gpu_memory = cleanup_old_temps = lambda *args: None
+
 # Model configurations
 MODEL_CONFIGS = {
     "llama": {
@@ -20,7 +28,7 @@ MODEL_CONFIGS = {
     },
     "qwen": {
         "hf_model_id": "Qwen/Qwen2.5-3B-Instruct",
-        "convert_script": "convert_checkpoint.py",  # Existing Qwen script
+        "convert_script": "convert_qwen.py",  # Existing Qwen script
         "gated": False,
     },
     "gemma": {
@@ -78,9 +86,9 @@ def parse_args():
     parser.add_argument(
         "--dtype",
         type=str,
-        default="float16",
+        default="float16",  # Explicitly set float16 as default
         choices=["float16", "bfloat16", "float32"],
-        help="Data type for model weights",
+        help="Data type for model weights (default: float16)",
     )
     parser.add_argument(
         "--tp_size",
@@ -93,7 +101,19 @@ def parse_args():
         type=str,
         default=None,
         choices=["int8", "int4", "int4_awq", "fp8"],
-        help="Quantization method (default: None for FP16)",
+        help="Quantization method (default: None - FP16 only)",
+    )
+    
+    # Memory management options
+    parser.add_argument(
+        "--load_on_cpu",
+        action="store_true",
+        help="Load model on CPU during conversion (reduces GPU memory usage)",
+    )
+    parser.add_argument(
+        "--single_worker",
+        action="store_true",
+        help="Use single worker for conversion (reduces memory usage)",
     )
     
     # Build options
@@ -112,7 +132,7 @@ def parse_args():
     parser.add_argument(
         "--max_output_len",
         type=int,
-        default=1024,
+        default=512,  # Updated default to 512
         help="Maximum output length",
     )
     
@@ -143,6 +163,29 @@ def parse_args():
         "--run_benchmark",
         action="store_true",
         help="Run benchmark after building engine",
+    )
+    parser.add_argument(
+        "--start_triton",
+        action="store_true",
+        help="Start Triton server before benchmarking (requires --run_benchmark)",
+    )
+    parser.add_argument(
+        "--triton_url",
+        type=str,
+        default="localhost:8001",
+        help="Triton server URL for benchmarking (default: localhost:8001)",
+    )
+    parser.add_argument(
+        "--triton_http_port",
+        type=int,
+        default=8000,
+        help="Triton HTTP port when starting server (default: 8000)",
+    )
+    parser.add_argument(
+        "--triton_grpc_port", 
+        type=int,
+        default=8001,
+        help="Triton gRPC port when starting server (default: 8001)",
     )
     parser.add_argument(
         "--sharegpt",
@@ -217,6 +260,8 @@ def convert_checkpoint(
     dtype: str = "float16",
     tp_size: int = 1,
     quantization: Optional[str] = None,
+    load_on_cpu: bool = True,
+    single_worker: bool = True,
 ) -> Path:
     """Convert HuggingFace checkpoint to TensorRT-LLM format."""
     config = MODEL_CONFIGS[model]
@@ -238,6 +283,7 @@ def convert_checkpoint(
     print(f"  Model dir: {model_dir}")
     print(f"  Output dir: {checkpoint_dir}")
     print(f"  dtype: {dtype}, tp_size: {tp_size}")
+    print(f"  load_on_cpu: {load_on_cpu}, single_worker: {single_worker}")
     
     # Build command based on model type
     if model == "gemma":
@@ -259,6 +305,12 @@ def convert_checkpoint(
             "--dtype", dtype,
             "--tp_size", str(tp_size),
         ]
+        
+        # Add memory management options for non-Gemma models
+        if load_on_cpu:
+            cmd.append("--load_model_on_cpu")
+        if single_worker:
+            cmd.extend(["--workers", "1"])
     
     # Add quantization options
     if quantization:
@@ -267,12 +319,27 @@ def convert_checkpoint(
         elif quantization == "int4_awq":
             cmd.extend(["--use_weight_only", "--weight_only_precision", "int4_awq"])
         elif quantization == "fp8":
-            cmd.append("--enable_fp8")
+            cmd.append("--use_fp8")
     
     print(f"[Convert] Running: {' '.join(cmd)}")
+    if load_on_cpu:
+        print(f"[Convert] Note: Using CPU loading to reduce memory usage")
+    
+    # Clear GPU cache before conversion
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"[Convert] GPU memory cleared")
+    except ImportError:
+        pass
     
     result = subprocess.run(cmd, capture_output=False)
     if result.returncode != 0:
+        if result.returncode == -9:
+            print(f"[Convert] ERROR: Process was killed (likely out of memory)")
+            print(f"[Convert] Try using --quantization int4 or --load_on_cpu options")
+            print(f"[Convert] Or add more system RAM/swap space")
         raise RuntimeError(f"Checkpoint conversion failed with code {result.returncode}")
     
     print(f"[Convert] Successfully converted to {checkpoint_dir}")
@@ -304,6 +371,15 @@ def build_engine(
     print(f"  max_input_len: {max_input_len}")
     print(f"  max_output_len: {max_output_len}")
     
+    # Clear GPU cache before building
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"[Build] GPU memory cleared")
+    except ImportError:
+        pass
+    
     # Determine gemm plugin dtype
     gemm_dtype = "float16" if dtype == "float16" else dtype
     
@@ -321,6 +397,9 @@ def build_engine(
     
     result = subprocess.run(cmd, capture_output=False)
     if result.returncode != 0:
+        if result.returncode == -9:
+            print(f"[Build] ERROR: Process was killed (likely out of memory)")
+            print(f"[Build] Try reducing max_batch_size, max_input_len, or using quantization")
         raise RuntimeError(f"Engine build failed with code {result.returncode}")
     
     print(f"[Build] Successfully built engine at {engine_dir}")
@@ -360,42 +439,129 @@ def run_inference(
         raise RuntimeError(f"Inference failed with code {result.returncode}")
 
 
+
+def start_triton_server(
+    engine_dir: Path,
+    tokenizer_dir: Path,
+    http_port: int = 8000,
+    grpc_port: int = 8001,
+) -> subprocess.Popen:
+    """Start Triton server with the built engine."""
+    script_dir = Path(__file__).parent.parent
+    server_script = script_dir / "servers" / "launch_triton_server.py"
+    
+    print(f"[Triton] Starting Triton server...")
+    print(f"  Engine: {engine_dir}")
+    print(f"  Tokenizer: {tokenizer_dir}")
+    print(f"  HTTP port: {http_port}")
+    print(f"  gRPC port: {grpc_port}")
+    
+    cmd = [
+        sys.executable, str(server_script),
+        "--engine-dir", str(engine_dir),
+        "--tokenizer-dir", str(tokenizer_dir),
+        "--http-port", str(http_port),
+        "--grpc-port", str(grpc_port),
+    ]
+    
+    print(f"[Triton] Running: {' '.join(cmd[:10])}...")
+    
+    # Start server in background
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    
+    # Wait a bit for server to start
+    import time
+    import requests
+    print("[Triton] Waiting for server to start...")
+    time.sleep(15)  # Give server time to initialize
+    
+    # Check if process is still running
+    if process.poll() is not None:
+        stdout, _ = process.communicate()
+        raise RuntimeError(f"Triton server failed to start: {stdout}")
+    
+    # Wait for server to be ready (up to 30 more seconds)
+    for i in range(30):
+        try:
+            response = requests.get(f"http://localhost:{http_port}/v2/health/ready", timeout=1)
+            if response.status_code == 200:
+                break
+        except:
+            pass
+        time.sleep(1)
+    else:
+        print("[Triton] Warning: Server may not be fully ready yet")
+    
+    print("[Triton] Server started successfully")
+    return process
+
+
 def run_benchmark_suite(
     engine_dir: Path,
     tokenizer_dir: Path,
     sharegpt: bool = False,
     max_prompts: int = 100,
     prompts_file: Optional[str] = None,
-    max_output_tokens: int = 128,
+    max_output_tokens: int = 512,  # Updated default
+    triton_url: str = "localhost:8001",
+    output_dir: str = "./analysis",  # Changed to analysis
 ):
-    """Run full benchmark suite."""
-    script_dir = Path(__file__).parent.parent
-    benchmark_script = script_dir / "benchmarks" / "benchmark.py"
+    """
+    Run full benchmark suite using Triton benchmark script.
     
-    print(f"[Benchmark] Running benchmark suite...")
+    NOTE: This assumes a Triton server is already running with the engine loaded.
+    To start the Triton server, run:
+    python servers/launch_triton_server.py --engine-dir <engine_dir> --tokenizer-dir <tokenizer_dir>
+    """
+    script_dir = Path(__file__).parent.parent
+    benchmark_script = script_dir / "benchmarks" / "benchmark_triton.py"
+    
+    print(f"[Benchmark] Running Triton benchmark suite...")
+    print(f"[Benchmark] Engine directory: {engine_dir}")
+    print(f"[Benchmark] Triton server URL: {triton_url}")
+    print(f"[Benchmark] Output directory: {output_dir}")
+    print(f"[Benchmark] Make sure Triton server is running with the engine loaded!")
     
     cmd = [
         sys.executable, str(benchmark_script),
-        "--model_path", str(tokenizer_dir),
-        "--trt_engine_dir", str(engine_dir),
-        "--engines", "tensorrt",
-        "--max_output_tokens", str(max_output_tokens),
-        "--batch_sizes", "1", "4", "8", "16",
+        "--engine", "triton",
+        "--tokenizer-dir", str(tokenizer_dir),
+        "--url", triton_url,
+        "--max-output-tokens", str(max_output_tokens),
+        "--concurrency", "1", "2", "4", "8", "16", "32", "64",  # Updated concurrency levels
+        "--num-runs", "5",  # Updated to 5 runs
+        "--num-warmup", "2",  # Updated to 2 warmup runs
+        "--output-dir", output_dir,
+        "--output", "triton_server_results.json",
     ]
     
     if sharegpt:
-        cmd.extend(["--sharegpt", "--max_prompts", str(max_prompts)])
+        cmd.extend(["--sharegpt", "--max-prompts", str(max_prompts)])
     elif prompts_file:
-        cmd.extend(["--prompts_file", prompts_file])
+        cmd.extend(["--prompts-file", prompts_file])
     
     print(f"[Benchmark] Running: {' '.join(cmd[:15])}...")
     
     result = subprocess.run(cmd, capture_output=False)
     if result.returncode != 0:
         raise RuntimeError(f"Benchmark failed with code {result.returncode}")
+    
+    # Return the expected output file path
+    return Path(output_dir) / "triton_server_results.json"
 
 
 def main():
+    # Initialize environment and clean caches
+    print("🔧 Initializing environment...")
+    try:
+        setup_temp_directories()
+        clear_gpu_memory()
+        temp_dir = Path(os.environ.get('TMPDIR', '/tmp'))
+        cleanup_old_temps(temp_dir)
+        print("✅ Environment initialized\n")
+    except Exception as e:
+        print(f"⚠️  Environment setup warning: {e}\n")
+    
     args = parse_args()
     
     # Get model configuration
@@ -417,7 +583,22 @@ def main():
     print(f"Model: {args.model} ({hf_model_id})")
     print(f"dtype: {args.dtype}")
     print(f"Quantization: {args.quantization or 'None (FP16)'}")
+    print(f"Memory options: load_on_cpu={args.load_on_cpu}, single_worker={args.single_worker}")
     print(f"{'='*60}\n")
+    
+    # Provide memory optimization recommendations for large models
+    if args.model == "llama" and not args.quantization and not args.load_on_cpu:
+        print("💡 MEMORY OPTIMIZATION TIPS:")
+        print("   --load_on_cpu        (uses CPU memory for conversion)")  
+        print("   --single_worker      (reduces concurrent memory usage)")
+        print("   Consider adding swap space: sudo fallocate -l 4G /swapfile")
+        print("   Example: python orchestrate_trt.py --model llama --dtype float16 --load_on_cpu --single_worker --run_benchmark --start_triton --sharegpt")
+        print()
+    
+    # Adjust max_batch_size for large models in FP16
+    if not args.quantization and args.max_batch_size > 32:
+        print(f"[INFO] Reducing max_batch_size from {args.max_batch_size} to 32 for FP16 model")
+        args.max_batch_size = 32
     
     # Determine what to skip
     skip_download = args.skip_download or args.run_only
@@ -450,6 +631,8 @@ def main():
             dtype=args.dtype,
             tp_size=args.tp_size,
             quantization=args.quantization,
+            load_on_cpu=args.load_on_cpu,
+            single_worker=args.single_worker,
         )
     else:
         quant_suffix = f"_{args.quantization}" if args.quantization else ""
@@ -475,22 +658,53 @@ def main():
             raise FileNotFoundError(f"Engine not found at {engine_dir}. Run without --skip_build")
     
     # Step 4: Run inference or benchmark
-    if args.run_benchmark:
-        run_benchmark_suite(
-            engine_dir=engine_dir,
-            tokenizer_dir=model_dir,
-            sharegpt=args.sharegpt,
-            max_prompts=args.max_prompts,
-            prompts_file=args.prompts_file,
-            max_output_tokens=args.max_output_len,
-        )
-    else:
-        run_inference(
-            engine_dir=engine_dir,
-            tokenizer_dir=model_dir,
-            input_texts=args.input_text,
-            max_output_len=args.max_output_len,
-        )
+    triton_process = None
+    try:
+        if args.run_benchmark:
+            # Start Triton server if requested
+            if args.start_triton:
+                triton_process = start_triton_server(
+                    engine_dir=engine_dir,
+                    tokenizer_dir=model_dir,
+                    http_port=args.triton_http_port,
+                    grpc_port=args.triton_grpc_port,
+                )
+            
+            output_dir = f"./analysis/{args.model}"
+            results_file = run_benchmark_suite(
+                engine_dir=engine_dir,
+                tokenizer_dir=model_dir,
+                sharegpt=args.sharegpt,
+                max_prompts=args.max_prompts,
+                prompts_file=args.prompts_file,
+                max_output_tokens=args.max_output_len,
+                triton_url=args.triton_url,
+                output_dir=output_dir,
+            )
+            
+            print(f"\n🎉 Benchmark Results Summary:")
+            print(f"📁 Results saved to: {results_file}")
+            if results_file.exists():
+                print(f"📊 File size: {results_file.stat().st_size / 1024:.1f} KB")
+            print(f"🚀 Use the results for analysis and plotting")
+        else:
+            run_inference(
+                engine_dir=engine_dir,
+                tokenizer_dir=model_dir,
+                input_texts=args.input_text,
+                max_output_len=args.max_output_len,
+            )
+    finally:
+        # Clean up Triton server if we started it
+        if triton_process:
+            print("[Triton] Shutting down server...")
+            triton_process.terminate()
+            try:
+                triton_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                triton_process.kill()
+                triton_process.wait()
+            print("[Triton] Server shut down")
     
     print(f"\n{'='*60}")
     print(f"Pipeline completed successfully!")

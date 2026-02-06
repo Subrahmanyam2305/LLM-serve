@@ -239,6 +239,7 @@ class VLLMBenchmark:
             dtype=self.dtype,
             trust_remote_code=True,
             gpu_memory_utilization=0.9,
+            max_model_len=4608,  # Match TensorRT-LLM max_seq_len for fair comparison (4096 + 512)
         )
         
     def run(self, prompts: List[str], max_tokens: int) -> tuple:
@@ -565,23 +566,25 @@ def run_benchmark(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Benchmark LLM inference engines")
+    parser.add_argument("--model", type=str, required=True,
+                        help="Model name")
     parser.add_argument("--model_path", type=str, required=True,
                         help="Path to HuggingFace model")
     parser.add_argument("--trt_engine_dir", type=str, default=None,
                         help="Path to TensorRT engine directory")
-    parser.add_argument("--batch_sizes", type=int, nargs="+", default=[1, 4, 8, 16],
+    parser.add_argument("--batch_sizes", type=int, nargs="+", default=[1, 2, 4, 8, 16, 32, 64],
                         help="Batch sizes to benchmark")
-    parser.add_argument("--max_output_tokens", type=int, default=128,
+    parser.add_argument("--max_output_tokens", type=int, default=512,
                         help="Maximum output tokens per request")
-    parser.add_argument("--num_warmup", type=int, default=3,
+    parser.add_argument("--num_warmup", type=int, default=2,
                         help="Number of warmup runs")
-    parser.add_argument("--num_runs", type=int, default=10,
+    parser.add_argument("--num_runs", type=int, default=5,
                         help="Number of benchmark runs")
     parser.add_argument("--engines", type=str, nargs="+", 
                         default=["tensorrt", "vllm", "sglang"],
                         choices=["tensorrt", "vllm", "sglang"],
                         help="Engines to benchmark")
-    parser.add_argument("--output", type=str, default="benchmark_results.json",
+    parser.add_argument("--output", type=str, default="benchmark_results.json", 
                         help="Output file for results")
     parser.add_argument("--prompts_file", type=str, default=None,
                         help="JSON file with test prompts")
@@ -706,6 +709,8 @@ def main():
         },
         "results": [asdict(r) for r in all_results],
     }
+
+    args.output = f"./analysis/{args.model}/{args.engines[0]}_server_results.json"
     
     with open(args.output, 'w') as f:
         json.dump(output_data, f, indent=2)
