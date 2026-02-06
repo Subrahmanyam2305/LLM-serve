@@ -23,9 +23,9 @@ from pathlib import Path
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate benchmark plots")
     parser.add_argument("--results-dir", type=str, default=None,
-                        help="Directory containing result JSON files (default: ../results)")
+                        help="Directory containing result JSON files (default: ./analysis)")
     parser.add_argument("--output-subfolder", type=str, required=True,
-                        help="Subfolder name under analysis/ for output (e.g., qwen-triton)")
+                        help="Subfolder name under analysis/ for output (e.g., llama)")
     parser.add_argument("--triton-results", type=str, default="triton_server_results.json",
                         help="Triton results filename")
     parser.add_argument("--vllm-results", type=str, default="vllm_server_results.json",
@@ -55,7 +55,7 @@ def main():
     
     # Setup paths
     script_dir = Path(__file__).parent
-    results_dir = Path(args.results_dir) if args.results_dir else script_dir.parent / "results"
+    results_dir = Path(args.results_dir) if args.results_dir else script_dir.parent / "analysis" / args.output_subfolder
     output_dir = script_dir.parent / "analysis" / args.output_subfolder
     output_dir.mkdir(parents=True, exist_ok=True)
     
