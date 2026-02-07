@@ -596,9 +596,9 @@ def main():
         print()
     
     # Adjust max_batch_size for large models in FP16
-    if not args.quantization and args.max_batch_size > 32:
-        print(f"[INFO] Reducing max_batch_size from {args.max_batch_size} to 32 for FP16 model")
-        args.max_batch_size = 32
+    # if not args.quantization and args.max_batch_size > 32:
+    #     print(f"[INFO] Reducing max_batch_size from {args.max_batch_size} to 32 for FP16 model")
+    #     args.max_batch_size = 32
     
     # Determine what to skip
     skip_download = args.skip_download or args.run_only
