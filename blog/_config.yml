@@ -1,0 +1,30 @@
+# Site settings
+title: "The Complete Guide to LLM Inference"
+description: "From Transformers to TensorRT: A practitioner's journey through LLM serving"
+author: "Subrahmanyam Arunachalam"
+baseurl: "/LLM-serve"
+url: "https://subrahmanyam-ai.github.io"
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+
+# Plugins
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+# Defaults
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: "default"
+
+# Exclude from build
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+  - README.md
