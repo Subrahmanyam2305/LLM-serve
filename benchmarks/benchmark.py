@@ -9,6 +9,7 @@ import json
 import time
 import subprocess
 import sys
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -711,6 +712,9 @@ def main():
     }
 
     args.output = f"./analysis/{args.model}/{args.engines[0]}_server_results.json"
+    output_dir = os.path.dirname(args.output)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     
     with open(args.output, 'w') as f:
         json.dump(output_data, f, indent=2)

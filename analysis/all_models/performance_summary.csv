@@ -1,0 +1,9 @@
+Engine,Model,Peak Throughput,Min TTFT
+TensorRT-LLM,Gemma 3-1B,3972 tok/s,7.7 ms
+TensorRT-LLM,Llama 3.2-3B,1407 tok/s,16.3 ms
+TensorRT-LLM,Phi-2 2.7B,1934 tok/s,13.8 ms
+TensorRT-LLM,Qwen 2.5-3B,2486 tok/s,16.1 ms
+vLLM,Gemma 3-1B,5121 tok/s,97.3 ms
+vLLM,Llama 3.2-3B,2477 tok/s,247.0 ms
+vLLM,Phi-2 2.7B,1571 tok/s,202.0 ms
+vLLM,Qwen 2.5-3B,2427 tok/s,224.3 ms
