@@ -28,16 +28,16 @@ MODEL_CONFIGS = {
     },
     "qwen": {
         "hf_model_id": "Qwen/Qwen2.5-3B-Instruct",
-        "convert_script": "convert_qwen.py",  # Existing Qwen script
+        "convert_script": "convert_qwen.py",  
         "gated": False,
     },
     "gemma": {
-        "hf_model_id": "google/gemma-3-4b-it",
+        "hf_model_id": "google/gemma-3-1b-it",
         "convert_script": "convert_gemma.py",
         "gated": True,
     },
     "phi": {
-        "hf_model_id": "microsoft/Phi-4-mini-instruct",
+        "hf_model_id": "microsoft/phi-2",
         "convert_script": "convert_phi.py",
         "gated": False,
     },
@@ -87,7 +87,7 @@ def parse_args():
         "--dtype",
         type=str,
         default="float16",  # Explicitly set float16 as default
-        choices=["float16", "bfloat16", "float32"],
+        choices=["float16", "bfloat16", "float32", "auto"],
         help="Data type for model weights (default: float16)",
     )
     parser.add_argument(
