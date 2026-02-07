@@ -21,7 +21,7 @@ import torch
 class BenchmarkResult:
     """Results from a single benchmark run."""
     engine: str
-    batch_size: int
+    concurrency: int
     num_runs: int
     avg_latency_ms: float
     std_latency_ms: float
