@@ -418,6 +418,15 @@ def run_triton_benchmark(
         if all_latencies:
             gpu_mem = get_gpu_memory_mb()
             
+            # Calculate ITL (Inter-Token Latency): (total_latency - TTFT) / (tokens_generated - 1)
+            avg_itl = None
+            if all_ttfts and total_tokens > len(all_latencies):
+                avg_total_latency = statistics.mean(all_latencies)
+                avg_ttft = statistics.mean(all_ttfts)
+                avg_tokens_per_req = total_tokens / len(all_latencies)
+                if avg_tokens_per_req > 1:
+                    avg_itl = (avg_total_latency - avg_ttft) / (avg_tokens_per_req - 1)
+            
             result = BenchmarkResult(
                 engine="Triton-TRT-LLM",
                 concurrency=concurrency,
@@ -431,6 +440,7 @@ def run_triton_benchmark(
                 total_tokens_generated=total_tokens,
                 gpu_memory_mb=gpu_mem,
                 ttft_ms=statistics.mean(all_ttfts) if all_ttfts else None,
+                itl_ms=avg_itl,  # Add ITL calculation
             )
             results.append(result)
             
@@ -439,6 +449,8 @@ def run_triton_benchmark(
             print(f"    Throughput: {result.throughput_tokens_per_sec:.2f} tokens/sec")
             if result.ttft_ms:
                 print(f"    Avg TTFT: {result.ttft_ms:.2f} ms")
+            if result.itl_ms:
+                print(f"    Avg ITL: {result.itl_ms:.2f} ms")
             print(f"    GPU memory: {result.gpu_memory_mb:.0f} MB")
     
     benchmark.cleanup()
@@ -642,8 +654,7 @@ def main():
     # Load prompts
     if args.sharegpt:
         try:
-            # Try to import from LLM-serve
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent / "LLM-serve" / "benchmarks"))
+            # Try to import from current benchmarks directory
             from load_sharegpt import load_sharegpt
             prompts = load_sharegpt(
                 max_prompts=args.max_prompts,
@@ -712,7 +723,7 @@ def main():
         "results": [asdict(r) for r in all_results],
     }
     
-    output_path = output_dir / args.output
+    output_path = output_dir / "triton_server_results.json"
     with open(output_path, 'w') as f:
         json.dump(output_data, f, indent=2)
     
