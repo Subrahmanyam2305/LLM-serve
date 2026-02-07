@@ -9,6 +9,7 @@ import json
 import time
 import subprocess
 import sys
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -21,7 +22,7 @@ import torch
 class BenchmarkResult:
     """Results from a single benchmark run."""
     engine: str
-    batch_size: int
+    concurrency: int
     num_runs: int
     avg_latency_ms: float
     std_latency_ms: float
@@ -239,6 +240,7 @@ class VLLMBenchmark:
             dtype=self.dtype,
             trust_remote_code=True,
             gpu_memory_utilization=0.9,
+            max_model_len=4608,  # Match TensorRT-LLM max_seq_len for fair comparison (4096 + 512)
         )
         
     def run(self, prompts: List[str], max_tokens: int) -> tuple:
@@ -534,7 +536,7 @@ def run_benchmark(
             
             result = BenchmarkResult(
                 engine=engine_name,
-                batch_size=batch_size,
+                concurrency=batch_size,
                 num_runs=len(latencies),
                 avg_latency_ms=statistics.mean(latencies),
                 std_latency_ms=statistics.stdev(latencies) if len(latencies) > 1 else 0,
@@ -565,23 +567,25 @@ def run_benchmark(
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Benchmark LLM inference engines")
+    parser.add_argument("--model", type=str, required=True,
+                        help="Model name")
     parser.add_argument("--model_path", type=str, required=True,
                         help="Path to HuggingFace model")
     parser.add_argument("--trt_engine_dir", type=str, default=None,
                         help="Path to TensorRT engine directory")
-    parser.add_argument("--batch_sizes", type=int, nargs="+", default=[1, 4, 8, 16],
+    parser.add_argument("--batch_sizes", type=int, nargs="+", default=[1, 2, 4, 8, 16, 32, 64],
                         help="Batch sizes to benchmark")
-    parser.add_argument("--max_output_tokens", type=int, default=128,
+    parser.add_argument("--max_output_tokens", type=int, default=512,
                         help="Maximum output tokens per request")
-    parser.add_argument("--num_warmup", type=int, default=3,
+    parser.add_argument("--num_warmup", type=int, default=2,
                         help="Number of warmup runs")
-    parser.add_argument("--num_runs", type=int, default=10,
+    parser.add_argument("--num_runs", type=int, default=5,
                         help="Number of benchmark runs")
     parser.add_argument("--engines", type=str, nargs="+", 
                         default=["tensorrt", "vllm", "sglang"],
                         choices=["tensorrt", "vllm", "sglang"],
                         help="Engines to benchmark")
-    parser.add_argument("--output", type=str, default="benchmark_results.json",
+    parser.add_argument("--output", type=str, default="benchmark_results.json", 
                         help="Output file for results")
     parser.add_argument("--prompts_file", type=str, default=None,
                         help="JSON file with test prompts")
@@ -706,6 +710,11 @@ def main():
         },
         "results": [asdict(r) for r in all_results],
     }
+
+    args.output = f"./analysis/{args.model}/{args.engines[0]}_server_results.json"
+    output_dir = os.path.dirname(args.output)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     
     with open(args.output, 'w') as f:
         json.dump(output_data, f, indent=2)
@@ -718,18 +727,18 @@ def main():
     print("\nSummary:")
     if args.streaming:
         print("-" * 110)
-        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<18} {'TTFT (ms)':<12} {'ITL (ms)':<12}")
+        print(f"{'Engine':<15} {'Conc':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<18} {'TTFT (ms)':<12} {'ITL (ms)':<12}")
         print("-" * 110)
         for r in all_results:
             ttft_str = f"{r.ttft_ms:.2f}" if r.ttft_ms is not None else "N/A"
             itl_str = f"{r.itl_ms:.2f}" if r.itl_ms is not None else "N/A"
-            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>16.2f} {ttft_str:>12} {itl_str:>12}")
+            print(f"{r.engine:<15} {r.concurrency:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>16.2f} {ttft_str:>12} {itl_str:>12}")
     else:
         print("-" * 80)
-        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
+        print(f"{'Engine':<15} {'Conc':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
         print("-" * 80)
         for r in all_results:
-            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
+            print(f"{r.engine:<15} {r.concurrency:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
 
 
 if __name__ == "__main__":

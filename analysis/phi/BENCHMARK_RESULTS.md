@@ -2,11 +2,11 @@
 # Server Benchmark Results: Triton TRT-LLM vs vLLM
 
 ## Configuration
-- **Model**: Qwen2.5-3B-Instruct
+- **Model**: phi-2
 - **Precision**: FP16
 - **GPU**: NVIDIA A10G (24GB VRAM)
 - **Dataset**: ShareGPT prompts
-- **Max Output Tokens**: 128
+- **Max Output Tokens**: 512
 - **Benchmark Type**: Server-based with concurrent requests
 
 ## Key Differences
@@ -24,37 +24,37 @@
 
 | Concurrency | Triton TRT-LLM | vLLM Server | Difference |
 |-------------|----------------|-------------|------------|
-| 1 | 66.10 | 67.86 | vLLM +2.6% |
-| 2 | 131.12 | 97.58 | Triton +34.4% |
-| 4 | 259.88 | 168.94 | Triton +53.8% |
-| 8 | 453.30 | 276.87 | Triton +63.7% |
-| 16 | 849.19 | 526.03 | Triton +61.4% |
-| 32 | 1494.37 | 848.49 | Triton +76.1% |
-| 64 | 2414.61 | 1487.42 | Triton +62.3% |
+| 1 | 71.58 | 76.82 | vLLM +6.8% |
+| 2 | 111.70 | 119.79 | vLLM +6.7% |
+| 4 | 234.59 | 254.31 | vLLM +7.8% |
+| 8 | 455.15 | 482.75 | vLLM +5.7% |
+| 16 | 747.17 | 746.56 | Triton +0.1% |
+| 32 | 1282.32 | 1206.56 | Triton +6.3% |
+| 64 | 1933.54 | 1571.09 | Triton +23.1% |
 
 ### Average Latency (ms) - End-to-End Generation Time
 
 | Concurrency | Triton TRT-LLM | vLLM Server | Difference |
 |-------------|----------------|-------------|------------|
-| 1 | 15491.74 | 12492.76 | vLLM +24.0% |
-| 2 | 15611.09 | 9335.51 | vLLM +67.2% |
-| 4 | 15755.46 | 8539.74 | vLLM +84.5% |
-| 8 | 18064.59 | 7309.06 | vLLM +147.2% |
-| 16 | 19276.89 | 7478.82 | vLLM +157.8% |
-| 32 | 21883.20 | 8259.44 | vLLM +164.9% |
-| 64 | 26959.64 | 9911.49 | vLLM +172.0% |
+| 1 | 7152.52 | 6665.17 | vLLM +7.3% |
+| 2 | 5862.99 | 6712.00 | Triton +12.6% |
+| 4 | 6381.09 | 7188.05 | Triton +11.2% |
+| 8 | 8612.74 | 7639.51 | vLLM +12.7% |
+| 16 | 9580.85 | 9510.31 | vLLM +0.7% |
+| 32 | 11199.81 | 12848.12 | Triton +12.8% |
+| 64 | 13753.29 | 18964.14 | Triton +27.5% |
 
 ### Time to First Token (ms)
 
 | Concurrency | Triton TRT-LLM | vLLM Server | Difference |
 |-------------|----------------|-------------|------------|
-| 1 | 15.99 | 29.49 | Triton +45.8% |
-| 2 | 23.73 | 29.46 | Triton +19.4% |
-| 4 | 28.89 | 31.79 | Triton +9.1% |
-| 8 | 32.03 | 45.75 | Triton +30.0% |
-| 16 | 33.96 | 57.18 | Triton +40.6% |
-| 32 | 40.25 | 75.87 | Triton +47.0% |
-| 64 | 68.49 | 96.68 | Triton +29.2% |
+| 1 | 13.78 | 201.97 | Triton +93.2% |
+| 2 | 20.46 | 502.05 | Triton +95.9% |
+| 4 | 24.91 | 340.86 | Triton +92.7% |
+| 8 | 28.66 | 503.11 | Triton +94.3% |
+| 16 | 29.88 | 1865.89 | Triton +98.4% |
+| 32 | 32.80 | 2382.19 | Triton +98.6% |
+| 64 | 50.69 | 3419.46 | Triton +98.5% |
 
 ## Key Findings
 
@@ -72,17 +72,20 @@
 ## How to Reproduce
 
 ```bash
-# Start Triton server with TensorRT-LLM backend
-# (See Triton TensorRT-LLM documentation)
-
-# Start vLLM server
-vllm serve Qwen/Qwen2.5-3B-Instruct --port 8000
-
-# Run benchmark
+# Run benchmark for Triton
 python benchmark_triton.py \
-    --triton-url localhost:8001 \
-    --vllm-url http://localhost:8000 \
-    --tokenizer-dir /path/to/Qwen2.5-3B-Instruct \
+    --engine triton \
+    --tokenizer-dir /path/to/phi-2 \
     --concurrency 1 4 8 16 32 64 \
     --sharegpt
+
+# Run benchmark for vLLM (after stopping Triton)
+python benchmark_triton.py \
+    --engine vllm \
+    --tokenizer-dir /path/to/phi-2 \
+    --concurrency 1 4 8 16 32 64 \
+    --sharegpt
+
+# Generate plots
+python generate_plots.py --output-subfolder phi
 ```
