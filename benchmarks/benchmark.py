@@ -535,7 +535,7 @@ def run_benchmark(
             
             result = BenchmarkResult(
                 engine=engine_name,
-                batch_size=batch_size,
+                concurrency=batch_size,
                 num_runs=len(latencies),
                 avg_latency_ms=statistics.mean(latencies),
                 std_latency_ms=statistics.stdev(latencies) if len(latencies) > 1 else 0,
@@ -723,18 +723,18 @@ def main():
     print("\nSummary:")
     if args.streaming:
         print("-" * 110)
-        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<18} {'TTFT (ms)':<12} {'ITL (ms)':<12}")
+        print(f"{'Engine':<15} {'Conc':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<18} {'TTFT (ms)':<12} {'ITL (ms)':<12}")
         print("-" * 110)
         for r in all_results:
             ttft_str = f"{r.ttft_ms:.2f}" if r.ttft_ms is not None else "N/A"
             itl_str = f"{r.itl_ms:.2f}" if r.itl_ms is not None else "N/A"
-            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>16.2f} {ttft_str:>12} {itl_str:>12}")
+            print(f"{r.engine:<15} {r.concurrency:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>16.2f} {ttft_str:>12} {itl_str:>12}")
     else:
         print("-" * 80)
-        print(f"{'Engine':<15} {'Batch':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
+        print(f"{'Engine':<15} {'Conc':<8} {'Latency (ms)':<20} {'Throughput (tok/s)':<20}")
         print("-" * 80)
         for r in all_results:
-            print(f"{r.engine:<15} {r.batch_size:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
+            print(f"{r.engine:<15} {r.concurrency:<8} {r.avg_latency_ms:>8.2f} ± {r.std_latency_ms:<8.2f} {r.throughput_tokens_per_sec:>18.2f}")
 
 
 if __name__ == "__main__":
