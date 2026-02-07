@@ -48,7 +48,6 @@ engines/
 # Benchmark outputs
 results/
 experiments/
-*.json
 !prompts.json
 
 # Keep analysis plots for documentation
