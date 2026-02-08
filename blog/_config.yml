@@ -1,6 +1,7 @@
 # Site settings
 title: "The Complete Guide to LLM Inference"
 description: "From Transformers to TensorRT: A practitioner's journey through LLM serving"
+# Updated: 2026-02-07
 author: "Subrahmanyam Arunachalam"
 baseurl: "/LLM-serve"
 url: "https://subrahmanyam-ai.github.io"
