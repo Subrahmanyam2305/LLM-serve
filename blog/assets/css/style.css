@@ -599,6 +599,106 @@ a:focus-visible {
   border-radius: 2px;
 }
 
+/* Architecture Cards */
+.architecture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--space-6);
+  margin: var(--space-8) 0;
+}
+
+.arch-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  background: var(--color-bg-alt);
+}
+
+.arch-header {
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--color-text);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border-light);
+  padding-bottom: var(--space-2);
+}
+
+.arch-features ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.arch-features li {
+  margin-bottom: var(--space-2);
+  padding-left: var(--space-6);
+  position: relative;
+}
+
+.arch-features li:before {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+/* Recommendation Grid */
+.recommendation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-6);
+  margin: var(--space-8) 0;
+}
+
+.rec-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  background: var(--color-bg-alt);
+  transition: all 0.2s ease;
+}
+
+.rec-card:hover {
+  border-color: var(--color-accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.rec-header {
+  font-weight: 600;
+  font-size: 1.1rem;
+  color: var(--color-text);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border-light);
+  padding-bottom: var(--space-2);
+}
+
+.rec-content ul {
+  margin: var(--space-3) 0;
+}
+
+.rec-content strong {
+  color: var(--color-text);
+}
+
+/* Scaling Guide */
+.scaling-guide {
+  background: linear-gradient(135deg, #f8fafc, #e2e8f0);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  margin: var(--space-6) 0;
+}
+
+.scaling-guide h4 {
+  margin-top: 0;
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.scaling-guide ul li {
+  margin-bottom: var(--space-2);
+}
+
 /* Selection */
 ::selection {
   background: var(--color-accent);

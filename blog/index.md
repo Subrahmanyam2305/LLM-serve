@@ -7,7 +7,7 @@ title: "The Complete Guide to LLM Inference"
 
 **From Transformers to TensorRT: A Practitioner's Journey Through LLM Serving**
 
-*By Subrahmanyam Arunachalam | February 2026*
+*By Subrahmanyam  | February 2026*
 
 ---
 
@@ -51,9 +51,8 @@ title: "The Complete Guide to LLM Inference"
 
 ## Introduction
 
-After spending months benchmarking LLM inference engines, building TensorRT pipelines, and debugging cryptic CUDA errors at 2 AM, I decided to write the guide I wish I had when I started.
+I wanted to understand how LLM inferencing works and how inferencing companies like Together AI, Baseten could serve models behind an API in such a fast fashion. Would they already have pre-loaded models into GPUs stored or is that all done during runtime when a user requests a new model? Going into this rabbit hole 
 
-This isn't a documentation dump. It's a practitioner's journey through the landscape of LLM serving—from understanding why inference is fundamentally different from training, to choosing between vLLM's elegant memory management and TensorRT's raw kernel optimization.
 
 <div class="key-insight">
 <h4>What You'll Learn</h4>
@@ -172,7 +171,7 @@ The Autoregressive Loop:
     │           Output: "Paris"                    │
     │                    │                         │
     │                    ▼                         │
-    │  Input: "The capital of France is Paris"    │
+    │  Input: "The capital of France is Paris"     │
     │                    │                         │
     │                    ▼                         │
     │  ┌─────────────────────────────────┐         │
@@ -243,12 +242,12 @@ The inference optimization stack can be visualized as layers, from high-level re
 │                    KERNEL LEVEL                             │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  Fused Operations, Custom CUDA Kernels, TensorRT    │    │
-│  │  "How do we make each operation as fast as possible?"│    │
+│  │ "How do we make each operation as fast as possible?"│    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 
         vLLM ──────────► Optimizes Request + Model Level
-        SGLang ────────► Optimizes Model Level (Prefix Caching)
+        SGLang ────────► Optimizes Model Level (Prefix Caching) [Theoretical]
         TensorRT-LLM ──► Optimizes Kernel Level
 </div>
 
@@ -320,15 +319,15 @@ python -m vllm.entrypoints.openai.api_server \
 </ul>
 </div>
 
-<h3 id="sglang-radixattention">SGLang: RadixAttention & Prefix Caching</h3>
+<h3 id="sglang-radixattention">SGLang: RadixAttention & Prefix Caching (Theoretical Overview)</h3>
 
-SGLang takes a different approach: **optimize for common prefixes**.
+SGLang takes a different approach: **optimize for common prefixes**. While I didn't include SGLang in my benchmarking due to limited experimental scope, its theoretical approach is worth understanding.
 
 #### The Insight
 
 In real applications, many requests share common prefixes:
 - System prompts ("You are a helpful assistant...")
-- Few-shot examples
+- Few-shot examples 
 - Document context in RAG applications
 
 <div class="ascii-diagram">
@@ -374,12 +373,18 @@ New requests traverse the tree, reusing cached computations.
 </div>
 
 <div class="callout callout-info">
-<div class="callout-title">💡 SGLang Shines For</div>
+<div class="callout-title">💡 SGLang Would Excel For</div>
 <ul>
 <li>Multi-turn conversations (chat history is a shared prefix)</li>
 <li>RAG applications (document context is shared)</li>
 <li>Structured generation with common templates</li>
+<li>Applications with high prefix overlap between requests</li>
 </ul>
+</div>
+
+<div class="callout callout-warning">
+<div class="callout-title">⚠️ Note on SGLang</div>
+<p>SGLang was not included in this benchmarking study to maintain focus on the vLLM vs TensorRT-LLM comparison. Future work would benefit from including SGLang, particularly for workloads with high prefix overlap.</p>
 </div>
 
 <h3 id="tensorrt-llm">TensorRT-LLM: Kernel-Level Optimization</h3>
@@ -430,6 +435,74 @@ After TensorRT Fusion (1 kernel launch):
 Fewer kernel launches = Less overhead = Lower latency
 </div>
 
+#### A Key Learning: The Importance of Batch Size Configuration
+
+![TensorRT vs vLLM Performance](assets/images/qwen_comparison_mistake.png)
+<p class="image-caption">Early comparison showing TensorRT-LLM's performance degradation at higher batch sizes</p>
+
+This chart illustrates a crucial lesson from my benchmarking journey. Initially, TensorRT-LLM showed excellent performance for small batch sizes but severe degradation at batch size 64. The culprit? **I had built the TensorRT engine with `max_batch_size=32`**.
+
+<div class="callout callout-warning">
+<div class="callout-title">⚠️ Critical Learning: Build Parameters Matter</div>
+<p>TensorRT engines are built with fixed memory allocation. When I configured <code>max_batch_size=32</code>, the engine couldn't efficiently handle larger batches. This highlighted two important concepts:</p>
+<ul>
+<li><strong>At small scales</strong>: CUDA kernel optimizations dominate performance</li>
+<li><strong>At large scales</strong>: Memory management and batching strategies become crucial</li>
+</ul>
+</div>
+
+This discovery led me to understand that **TensorRT-LLM without Triton server lacks sophisticated batching strategies** like inflight batching, continuous batching, and dynamic KV cache management that vLLM provides natively.
+
+#### Architecture-Specific Features
+
+TensorRT-LLM's performance varies significantly across NVIDIA GPU architectures:
+
+<div class="architecture-grid">
+<div class="arch-card">
+<div class="arch-header">**Ampere (A10G, A40, A100)**</div>
+<div class="arch-features">
+<ul>
+<li>✅ FP16 optimization</li>
+<li>✅ INT8 quantization</li>
+<li>✅ Multi-GPU support</li>
+<li>❌ FP8 quantization</li>
+<li>❌ FlashAttention-2</li>
+</ul>
+</div>
+</div>
+
+<div class="arch-card">
+<div class="arch-header">**Hopper (H100, H200)**</div>
+<div class="arch-features">
+<ul>
+<li>✅ All Ampere features</li>
+<li>✅ FP8 quantization (2x memory savings)</li>
+<li>✅ FlashAttention-2 (better memory efficiency)</li>
+<li>✅ Transformer Engine integration</li>
+<li>✅ Advanced tensor parallelism</li>
+</ul>
+</div>
+</div>
+
+<div class="arch-card">
+<div class="arch-header">**Ada Lovelace (RTX 4090)**</div>
+<div class="arch-features">
+<ul>
+<li>✅ Consumer GPU support</li>
+<li>✅ FP16 optimization</li>
+<li>⚠️ Limited multi-GPU</li>
+<li>❌ FP8 quantization</li>
+<li>❌ Professional features</li>
+</ul>
+</div>
+</div>
+</div>
+
+<div class="callout callout-info">
+<div class="callout-title">💡 Architecture Impact on Performance</div>
+<p>The same model running on H100 with FP8 quantization can achieve <strong>2x higher throughput</strong> and <strong>50% lower memory usage</strong> compared to A100 with FP16. This isn't just about raw compute—it's about specialized hardware support for transformer operations.</p>
+</div>
+
 #### The Trade-off
 
 | Aspect | vLLM | TensorRT-LLM |
@@ -439,6 +512,7 @@ Fewer kernel launches = Less overhead = Lower latency
 | **Portability** | Works on any GPU | Engine tied to specific GPU |
 | **Latency** | Good | Excellent (10-15x better TTFT) |
 | **Throughput** | Excellent | Good to Excellent |
+| **Batching** | Dynamic, sophisticated | Requires Triton for advanced features |
 
 ```bash
 # TensorRT-LLM requires a multi-step process
@@ -463,66 +537,196 @@ python run_trt.py --engine_dir ./engine --tokenizer_dir ./Qwen2.5-3B
 
 <h3 id="tensorrt-pipeline">The TensorRT-LLM Pipeline Explained</h3>
 
-Let me walk you through the exact pipeline I built for this project. Understanding each step demystifies what "compilation" actually means.
+Let me walk you through the exact pipeline I built for this project. Understanding each step demystifies what "compilation" actually means and reveals the extensive configuration options available.
 
-#### Step 1: Checkpoint Conversion
+#### Step 1: Checkpoint Conversion (`convert_checkpoint.py`)
 
-The first step reorganizes HuggingFace weights for optimal GPU memory access patterns:
+The first step reorganizes HuggingFace weights for optimal GPU memory access patterns. This process goes far beyond simple format conversion.
 
-```python
-# From tensorrt/convert_qwen.py
+<div class="ascii-diagram">
+Checkpoint Conversion Process:
+
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│   HuggingFace       │    │   Weight Analysis   │    │   TensorRT-LLM      │
+│   Model Format      │───►│   & Reorganization  │───►│   Checkpoint        │
+│   (config.json,     │    │                     │    │   (optimized        │
+│    model.safetens)  │    │   • Transpose ops   │    │    layout)          │
+└─────────────────────┘    │   • Head reshaping  │    └─────────────────────┘
+                          │   • Vocab padding   │
+                          │   • TP preparation  │
+                          └─────────────────────┘
+</div>
+
+**Key convert_checkpoint.py Parameters:**
+
+```bash
+# Basic conversion for single-GPU inference
 python convert_checkpoint.py \
     --model_dir ./models/Qwen2.5-3B-Instruct \
     --output_dir ./checkpoints/qwen_fp16 \
     --dtype float16
+
+# Advanced conversion with quantization and multi-GPU support
+python convert_checkpoint.py \
+    --model_dir ./models/Qwen2.5-3B-Instruct \
+    --output_dir ./checkpoints/qwen_int8_tp2 \
+    --dtype float16 \
+    --use_weight_only \                    # Enable weight-only quantization
+    --weight_only_precision int8 \         # INT8 quantization
+    --per_channel \                        # Per-channel quantization (better quality)
+    --tp_size 2 \                         # Tensor parallelism across 2 GPUs
+    --smoothquant 0.5 \                   # SmoothQuant for better INT8 quality
+    --calib_size 512                      # Calibration dataset size
+
+# Qwen-specific optimizations (based on NVIDIA/TensorRT-LLM examples)
+python convert_checkpoint.py \
+    --model_dir ./models/Qwen2.5-3B-Instruct \
+    --output_dir ./checkpoints/qwen_optimized \
+    --dtype float16 \
+    --rotary_base 1000000 \               # Qwen-specific RoPE base frequency
+    --use_parallel_embedding \            # Parallel embedding layers
+    --embedding_sharding_dim 0 \          # Embedding sharding dimension
+    --vocab_size 151936 \                 # Qwen tokenizer vocab size
+    --max_seq_len 32768 \                 # Extended context support
+    --use_fused_mlp                       # Fused MLP for better performance
 ```
+
+<div class="callout callout-info">
+<div class="callout-title">💡 Model-Specific Parameters Matter</div>
+<p>Different model architectures require specific conversion parameters. Qwen models, for example, use a different RoPE base frequency (1M vs 10K for LLaMA) and specific embedding configurations. Using incorrect parameters can lead to performance degradation or inference errors. Always consult the <a href="https://nvidia.github.io/TensorRT-LLM/">TensorRT-LLM documentation</a> for model-specific guidelines.</p>
+</div>
 
 **What happens under the hood:**
-- Weights are transposed for coalesced memory access
-- Attention heads are reorganized for efficient parallel computation
-- Layer normalization weights are fused where possible
+- **Weight Transposition**: Matrix weights are transposed to enable coalesced memory access patterns on GPU
+- **Attention Head Reorganization**: Multi-head attention weights are reshaped for efficient parallel computation
+- **Tensor Parallelism Preparation**: When `tp_size > 1`, weights are pre-split for multi-GPU inference
+- **Quantization Calibration**: If quantization is enabled, generates quantization scales and zero-points
+- **Vocabulary Padding**: Pads vocabulary to optimal sizes for GPU efficiency (multiples of 64/128)
 
-#### Step 2: Engine Building
+<div class="callout callout-info">
+<div class="callout-title">💡 Conversion Parameters Impact Performance</div>
+<p>The conversion step isn't just format translation—it's the first optimization phase. Parameters like <code>per_channel</code> quantization vs <code>per_tensor</code> can impact final model quality significantly, while <code>tp_size</code> determines multi-GPU scaling capabilities.</p>
+</div>
 
-This is where the magic happens. TensorRT analyzes your model and generates optimized CUDA code:
+#### Step 2: Engine Building (`trtllm-build`)
+
+This is where TensorRT's true magic happens. The builder analyzes your model and generates optimized CUDA code tailored to your specific GPU architecture.
 
 ```bash
+# Production-ready engine build with all optimizations
 trtllm-build \
-    --checkpoint_dir ./checkpoints/qwen_fp16 \
-    --output_dir ./engines/qwen_fp16 \
-    --gemm_plugin float16 \
-    --max_batch_size 64 \
-    --max_input_len 4096 \
-    --max_output_len 512
+    --checkpoint_dir ./checkpoints/qwen_int8_tp2 \
+    --output_dir ./engines/qwen_int8_tp2_optimized \
+    --gemm_plugin float16 \               # Use optimized GEMM kernels
+    --gpt_attention_plugin float16 \      # Use optimized attention kernels
+    --remove_input_padding \              # Remove padding tokens for efficiency
+    --enable_context_fmha \               # Fused multi-head attention
+    --enable_context_fmha_fp32_acc \      # FP32 accumulation for stability
+    --paged_kv_cache \                    # Enable paged KV cache (like vLLM)
+    --max_batch_size 64 \                 # CRITICAL: Set based on expected load
+    --max_input_len 4096 \                # Maximum input sequence length
+    --max_output_len 512 \                # Maximum output sequence length
+    --max_beam_width 1 \                  # For beam search (1 = greedy)
+    --builder_opt 4 \                     # Optimization level (0-5)
+    --multiple_profiles \                 # Generate multiple optimized profiles
+    --strongly_typed                      # Enable strong typing optimizations
 ```
 
+**Critical Build Parameters Explained:**
+
+| Parameter | Impact | Tuning Notes |
+|-----------|--------|--------------|
+| `max_batch_size` | **Memory allocation & performance ceiling** | Set to your expected peak load. Too low = cannot handle traffic spikes. Too high = wasted memory |
+| `builder_opt` | **Build time vs optimization trade-off** | 0=fastest build, 5=most optimized. Use 4+ for production |
+| `gemm_plugin` | **Matrix multiplication optimization** | `float16` on most GPUs, `bfloat16` on Ampere+, `fp8` on Hopper |
+| `enable_context_fmha` | **Attention optimization** | Significant memory savings, essential for long sequences |
+| `multiple_profiles` | **Dynamic sequence handling** | Generates optimizations for different sequence lengths |
+| `paged_kv_cache` | **Memory efficiency** | Reduces memory fragmentation, especially important for concurrent requests |
+
 <div class="ascii-diagram">
-Engine Build Process (simplified):
+Detailed Engine Build Process:
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    TensorRT Builder                         │
 ├─────────────────────────────────────────────────────────────┤
-│  1. Parse Network                                           │
-│     └─► Read checkpoint, build computation graph            │
+│  1. Network Parsing & Graph Construction                    │
+│     ├─► Parse checkpoint format                             │
+│     ├─► Build computation graph                             │
+│     └─► Validate network compatibility                      │
 │                                                             │
-│  2. Apply Optimizations                                     │
-│     ├─► Layer fusion (combine ops)                          │
-│     ├─► Precision calibration (FP16/INT8)                   │
-│     └─► Memory optimization (tensor reuse)                  │
+│  2. Architecture-Specific Optimizations                     │
+│     ├─► SM version detection (70, 80, 86, 89, 90)          │
+│     ├─► Available memory bandwidth analysis                 │
+│     ├─► Tensor Core availability check                      │
+│     └─► Architecture-specific kernel selection              │
 │                                                             │
-│  3. Kernel Selection                                        │
-│     └─► Test 1000s of kernel variants per layer             │
-│     └─► Profile each on YOUR specific GPU                   │
-│     └─► Select fastest combination                          │
+│  3. Layer-by-Layer Optimization                            │
+│     ├─► Test 1000s of kernel implementations               │
+│     ├─► Profile each kernel on target hardware             │
+│     ├─► Select optimal precision (FP32/FP16/INT8/FP8)      │
+│     ├─► Apply layer fusion (combine operations)            │
+│     └─► Optimize memory layout and access patterns         │
 │                                                             │
-│  4. Serialize Engine                                        │
-│     └─► Write optimized binary (GPU-specific!)              │
+│  4. Memory Planning & Allocation                            │
+│     ├─► Static memory pre-allocation                       │
+│     ├─► Tensor lifetime analysis                           │
+│     ├─► Memory reuse optimization                          │
+│     └─► KV cache layout planning                           │
+│                                                             │
+│  5. Profile Generation (if --multiple_profiles)            │
+│     ├─► Generate optimizations for seq_len=128,512,2k,4k   │
+│     ├─► Create batch_size-specific optimizations           │
+│     └─► Runtime profile selection logic                    │
+│                                                             │
+│  6. Engine Serialization                                   │
+│     ├─► Serialize optimized CUDA kernels                   │
+│     ├─► Package runtime metadata                           │
+│     └─► Generate GPU-architecture-specific binary          │
 └─────────────────────────────────────────────────────────────┘
+
+Build Time: 10-45 minutes (depending on model size & optimization level)
 </div>
+
+<div class="callout callout-warning">
+<div class="callout-title">⚠️ The max_batch_size Trap</div>
+<p>This is the exact mistake I made initially. Building with <code>max_batch_size=32</code> means the engine <strong>physically cannot</strong> handle batch sizes >32 efficiently. The memory layout is fixed at build time. My performance degradation at batch_size=64 was caused by this constraint—the engine was falling back to inefficient memory management.</p>
+</div>
+
+#### Step 3: Architecture-Specific Considerations
+
+Different NVIDIA architectures unlock different optimization capabilities:
+
+**Ampere (A10G, A40, A100) - SM 86/80:**
+```bash
+# Optimized for Ampere
+trtllm-build \
+    --gemm_plugin float16 \
+    --gpt_attention_plugin float16 \
+    --enable_context_fmha \          # Available on Ampere
+    --use_weight_only \
+    --weight_only_precision int8     # INT8 well-supported
+```
+
+**Hopper (H100, H200) - SM 90:**
+```bash
+# Hopper-specific optimizations
+trtllm-build \
+    --gemm_plugin fp8 \              # FP8 Tensor Cores
+    --gpt_attention_plugin fp8 \     # FP8 attention
+    --enable_fp8 \                   # Enable FP8 throughout
+    --fp8_kv_cache \                 # FP8 KV cache (2x memory savings)
+    --enable_context_fmha \
+    --use_fused_mlp                  # Hopper-optimized MLP fusion
+```
 
 <div class="callout callout-info">
 <div class="callout-title">💡 Why Engine Build Takes So Long</div>
-<p>TensorRT literally benchmarks thousands of kernel implementations for each layer on your specific GPU. A 3B model can take 10-30 minutes to build. This is why engines are GPU-specific—the "fastest" kernel on A10G might not be fastest on H100.</p>
+<p>TensorRT literally benchmarks thousands of kernel implementations for each layer on your specific GPU. For a 3B model:</p>
+<ul>
+<li><strong>~40 transformer layers</strong> × <strong>~10 operations per layer</strong> × <strong>~100 kernel variants</strong> = <strong>40,000+ benchmarks</strong></li>
+<li>Each benchmark runs multiple times for statistical significance</li>
+<li>This is why engines are GPU-specific—the "fastest" kernel on A10G might not be fastest on H100</li>
+</ul>
 </div>
 
 <h3 id="quantization">Quantization Strategies</h3>
@@ -605,23 +809,7 @@ llm_host/
 └── LLM-serve/      # This repository
 ```
 
-#### Pitfall 2: Unfair Token Counting
-
-I initially found SGLang showing 2x higher throughput than vLLM. Suspicious!
-
-The bug: SGLang was using word count estimation (`len(output.split())`) while vLLM used actual tokenizer counts.
-
-**Solution:** Always use the tokenizer:
-
-```python
-# Wrong (unfair!)
-tokens_generated = len(output_text.split()) * 1.3
-
-# Correct (fair)
-tokens_generated = len(tokenizer.encode(output_text))
-```
-
-#### Pitfall 3: Sampling Parameters
+#### Pitfall 2: Sampling Parameters
 
 Different defaults across engines can skew results:
 
@@ -646,43 +834,205 @@ After weeks of benchmarking, here are the results across 4 models on NVIDIA A10G
 | **Phi-2 2.7B** | **1,934 tok/s** | 1,571 tok/s | **13.8 ms** | 202.0 ms |
 | **Qwen 2.5-3B** | **2,486 tok/s** | 2,427 tok/s | **16.1 ms** | 224.3 ms |
 
-![Multi-Model Dashboard](assets/images/multi_model_dashboard.png)
-<p class="image-caption">TensorRT-LLM performance across all tested models</p>
+![Multi-Model Throughput Comparison](assets/images/throughput_comparison.png)
+<p class="image-caption">TensorRT-LLM vs vLLM: Throughput across different models and batch sizes</p>
 
-![vLLM Dashboard](assets/images/multi_model_dashboard_vllm.png)
-<p class="image-caption">vLLM performance across all tested models</p>
+![Multi-Model Latency Comparison](assets/images/latency_comparison.png) 
+<p class="image-caption">TensorRT-LLM vs vLLM: Latency (TTFT) comparison showing TensorRT's consistent advantage</p>
+
+![Scaling Efficiency Analysis](assets/images/scaling_efficiency.png)
+<p class="image-caption">How both engines scale with increasing batch sizes - revealing the KV cache optimization differences</p>
 
 #### Key Findings
 
 <div class="key-insight">
 <h4>🔍 What the Data Tells Us</h4>
 <ol>
-<li><strong>vLLM wins throughput</strong> (generally 20-80% higher), except for Phi-2 and Qwen where TensorRT wins</li>
+<li><strong>vLLM wins throughput</strong> at higher batch sizes (20-80% higher), except for Phi-2 and Qwen where TensorRT wins</li>
 <li><strong>TensorRT dominates latency</strong> (10-15x better TTFT across ALL models)</li>
-<li><strong>Model architecture matters</strong>: Phi-2 and Qwen uniquely favor TensorRT for throughput</li>
-<li><strong>Smaller isn't always slower</strong>: Gemma (1B) outperforms larger models (3B) on both engines</li>
+<li><strong>The crossover point</strong>: TensorRT shines for <16 concurrent requests, vLLM excels beyond that</li>
+<li><strong>KV cache optimizations matter</strong>: vLLM's PagedAttention shows its strength at scale</li>
+<li><strong>Model architecture matters</strong>: Phi-2 and Qwen uniquely favor TensorRT for throughput due to their specific architectural properties</li>
 </ol>
+</div>
+
+#### The Scaling Story: Why KV Cache Optimization Becomes Critical
+
+The scaling efficiency chart reveals a crucial insight about LLM inference optimization:
+
+<div class="callout callout-info">
+<div class="callout-title">💡 Small Scale vs Large Scale Optimization</div>
+<ul>
+<li><strong>At small scales (batch size 1-8)</strong>: CUDA kernel optimizations dominate. TensorRT's fused kernels provide 10-15x better TTFT.</li>
+<li><strong>At large scales (batch size 16+)</strong>: Memory management becomes the bottleneck. vLLM's PagedAttention and continuous batching strategies take over.</li>
+<li><strong>The transition happens around batch size 8-16</strong> for most models, where the overhead of memory fragmentation starts outweighing pure compute optimizations.</li>
+</ul>
+</div>
+
+This explains why **TensorRT-LLM without Triton server** struggles at higher batch sizes—it lacks the sophisticated memory management that vLLM provides natively:
+
+| Optimization Strategy | TensorRT-LLM (standalone) | vLLM | Impact |
+|----------------------|---------------------------|------|---------|
+| **Continuous Batching** | ❌ Static batching only | ✅ Dynamic request handling | Critical for throughput |
+| **KV Cache Paging** | ❌ Pre-allocated, fragmented | ✅ PagedAttention | 2-3x memory efficiency |
+| **Request Scheduling** | ❌ Basic FIFO | ✅ Intelligent scheduling | Better resource utilization |
+| **Memory Defragmentation** | ❌ Static allocation | ✅ Dynamic paging | Reduces memory waste |
+
+#### The Llama Batch Size 64 Anomaly Explained
+
+Sharp-eyed readers will notice Llama's performance drops significantly at batch size 64 in the TensorRT results. This isn't a model-specific issue—it's a **configuration mistake** that illustrates the critical importance of build parameters:
+
+<div class="callout callout-warning">
+<div class="callout-title">⚠️ The max_batch_size=32 Constraint</div>
+<p>I initially built the Llama engine with <code>max_batch_size=32</code>. When testing at batch_size=64, the engine couldn't efficiently allocate memory for the larger batch. Instead of failing gracefully, it fell back to:</p>
+<ul>
+<li>Processing requests in multiple smaller batches (serialized)</li>
+<li>Inefficient memory reallocation</li>
+<li>Suboptimal kernel launch patterns</li>
+</ul>
+<p>This resulted in <strong>worse performance than smaller batch sizes</strong>—a clear sign of misconfiguration rather than inherent model limitations.</p>
 </div>
 
 #### Scaling with Concurrency
 
-![Throughput Comparison](assets/images/throughput_comparison_vllm.png)
-<p class="image-caption">How throughput scales with concurrent requests</p>
+![TensorRT Throughput Scaling](assets/images/throughput_comparison_tensorrt.png)
+<p class="image-caption">TensorRT-LLM throughput scaling - showing the impact of batch size constraints</p>
 
-![TTFT Comparison](assets/images/ttft_comparison_tensorrt.png)
+![vLLM Throughput Scaling](assets/images/throughput_comparison_vllm.png) 
+<p class="image-caption">vLLM throughput scaling - demonstrating superior high-concurrency performance</p>
+
+![TensorRT TTFT Performance](assets/images/ttft_comparison_tensorrt.png)
 <p class="image-caption">TensorRT maintains low TTFT even under load</p>
 
 <h3 id="when-to-use-what">When to Use What</h3>
 
-Based on my benchmarking, here's a decision framework:
+Based on my comprehensive benchmarking, here's a decision framework that considers both performance characteristics and operational requirements:
 
-| Use Case | Recommended | Why |
-|----------|-------------|-----|
-| **Real-time chat** | TensorRT-LLM | 7-16ms TTFT feels instant |
-| **Batch processing** | vLLM | Higher throughput = lower cost |
-| **Multi-turn conversations** | SGLang | RadixAttention reuses context |
-| **Quick prototyping** | vLLM | No compilation, instant start |
-| **Production API** | Triton + TensorRT | Best of both worlds |
+#### Primary Decision Matrix
+
+| Use Case | Primary Recommendation | Alternative | Why |
+|----------|----------------------|-------------|-----|
+| **Real-time chat** (low latency critical) | **TensorRT-LLM** + Triton | TensorRT standalone | 7-16ms TTFT feels instant, Triton adds batching |
+| **High-throughput APIs** (>16 concurrent) | **vLLM** | TensorRT + Triton | PagedAttention excels at scale |
+| **Mixed workload** (varying request patterns) | **Triton + TensorRT-LLM** | vLLM | Best of both: TRT latency + Triton batching |
+| **Batch processing** (offline inference) | **vLLM** | TensorRT + Triton | Higher throughput = lower cost per token |
+| **Quick prototyping** | **vLLM** | Transformers | No compilation, instant start, good defaults |
+| **Resource-constrained** (single GPU) | **TensorRT-LLM** | vLLM with quantization | Better memory efficiency, lower VRAM usage |
+
+#### When to Choose Each Engine
+
+<div class="recommendation-grid">
+<div class="rec-card">
+<div class="rec-header">**TensorRT-LLM (Standalone)**</div>
+<div class="rec-content">
+<strong>✅ Choose When:</strong>
+<ul>
+<li>Latency is critical (<50ms TTFT required)</li>
+<li>Low to moderate concurrency (≤16 requests)</li>
+<li>Single-model serving</li>
+<li>You have time for optimization</li>
+</ul>
+<strong>❌ Avoid When:</strong>
+<ul>
+<li>High concurrency expected (>32 concurrent)</li>
+<li>Need rapid deployment</li>
+<li>Frequent model swapping required</li>
+</ul>
+</div>
+</div>
+
+<div class="rec-card">
+<div class="rec-header">**vLLM**</div>
+<div class="rec-content">
+<strong>✅ Choose When:</strong>
+<ul>
+<li>High throughput is priority</li>
+<li>High concurrency (>16 requests)</li>
+<li>Need OpenAI-compatible API</li>
+<li>Rapid prototyping/deployment</li>
+<li>Multi-model serving</li>
+</ul>
+<strong>❌ Avoid When:</strong>
+<ul>
+<li>Sub-20ms latency is required</li>
+<li>Single-request performance is critical</li>
+<li>Memory is extremely constrained</li>
+</ul>
+</div>
+</div>
+
+<div class="rec-card">
+<div class="rec-header">**TensorRT-LLM + Triton** 🏆</div>
+<div class="rec-content">
+<strong>✅ The Production Sweet Spot:</strong>
+<ul>
+<li>Combines TensorRT latency with advanced batching</li>
+<li>Inflight batching and request scheduling</li>
+<li>Health checks and monitoring built-in</li>
+<li>Multi-model support with resource management</li>
+<li>Production-grade reliability</li>
+</ul>
+<strong>⚠️ Consider the complexity:</strong>
+<ul>
+<li>More complex setup and configuration</li>
+<li>Requires containerization knowledge</li>
+<li>Longer development cycle</li>
+</ul>
+</div>
+</div>
+</div>
+
+#### Architecture-Specific Recommendations
+
+Your GPU architecture significantly impacts the optimal choice:
+
+**NVIDIA Ampere (A10G, A40, A100):**
+- **First choice**: TensorRT-LLM with INT8 quantization
+- **Alternative**: vLLM for high-concurrency workloads
+- **Avoid**: FP8 quantization (not supported)
+
+**NVIDIA Hopper (H100, H200):**  
+- **First choice**: TensorRT-LLM with FP8 quantization (2x memory savings)
+- **Alternative**: vLLM with tensor parallelism for massive models
+- **Special consideration**: FP8 support gives TensorRT significant advantage
+
+**Consumer GPUs (RTX 4090, etc.):**
+- **First choice**: vLLM (better community support, fewer driver issues)
+- **Alternative**: TensorRT-LLM for single-user applications
+- **Limitation**: Multi-GPU scaling often problematic
+
+#### Scaling Transition Points
+
+Based on the benchmark data, here are the empirical transition points:
+
+<div class="scaling-guide">
+<h4>Performance Transition Points</h4>
+<ul>
+<li><strong>1-8 concurrent requests</strong>: TensorRT-LLM wins on both latency and throughput</li>
+<li><strong>8-16 concurrent requests</strong>: TensorRT wins latency, vLLM catches up on throughput</li>
+<li><strong>16-32 concurrent requests</strong>: vLLM wins throughput, TensorRT still wins latency</li>
+<li><strong>32+ concurrent requests</strong>: vLLM wins both metrics (unless using Triton)</li>
+</ul>
+</div>
+
+#### The Production Reality Check
+
+<div class="callout callout-warning">
+<div class="callout-title">⚠️ Benchmarks vs Reality</div>
+<p>These recommendations are based on controlled benchmarks. In production, consider:</p>
+<ul>
+<li><strong>Request patterns are rarely uniform</strong>: Real traffic has spikes, varying lengths, and different priorities</li>
+<li><strong>Maintenance overhead</strong>: TensorRT engines need rebuilding for model updates, vLLM just needs file replacement</li>
+<li><strong>Observability</strong>: vLLM has better built-in metrics and monitoring</li>
+<li><strong>Community support</strong>: vLLM has broader community, TensorRT-LLM has NVIDIA backing</li>
+</ul>
+</div>
+
+#### My Personal Recommendation
+
+For most production use cases, I recommend starting with **vLLM** for rapid deployment and validation, then migrating to **TensorRT-LLM + Triton** once you understand your specific performance requirements and have time for proper optimization.
+
+The only exception is if your application absolutely requires sub-20ms latency—in that case, start with TensorRT-LLM immediately.
 
 ---
 
@@ -764,20 +1114,6 @@ rm -rf ~/.cache/flashinfer
 python benchmark.py --streaming --engines vllm tensorrt
 ```
 
-#### Gated Model Access Denied
-
-```
-401 Client Error: Unauthorized for url: https://huggingface.co/meta-llama/...
-```
-
-**Solution:**
-1. Get token from https://huggingface.co/settings/tokens
-2. Accept model license on HuggingFace
-3. Set environment variable:
-```bash
-export HF_TOKEN=your_token_here
-```
-
 ### Quick Reference
 
 | Issue | Quick Fix |
@@ -788,7 +1124,6 @@ export HF_TOKEN=your_token_here
 | CUDA_HOME not set | `export CUDA_HOME=/usr/local/cuda` |
 | Flashinfer nvcc error | `--attention-backend triton` |
 | TTFT showing None | Use `--streaming` flag |
-| Gated model denied | Set `HF_TOKEN` + accept license |
 
 ---
 
@@ -872,7 +1207,7 @@ LLM inference optimization is a deep rabbit hole, but the core ideas are simple:
 3. **TensorRT solves latency** with kernel fusion (kernel-level optimization)
 4. **Choose based on your use case**: latency-sensitive → TensorRT, throughput-sensitive → vLLM
 
-The code, benchmarks, and all the painful lessons learned are in the [LLM-serve repository](https://github.com/subrahmanyam-arunachalam/LLM-serve). Feel free to use it as a starting point for your own inference optimization journey.
+The code, benchmarks, and all the painful lessons learned are in the [LLM-serve repository](https://github.com/subrahmanyam2305/LLM-serve). Feel free to use it as a starting point for your own inference optimization journey.
 
 <div class="key-insight">
 <h4>Final Thoughts</h4>
@@ -881,7 +1216,7 @@ The code, benchmarks, and all the painful lessons learned are in the [LLM-serve 
 
 ---
 
-*Questions? Find me on [LinkedIn](https://linkedin.com/in/subrahmanyam-arunachalam) or open an issue on [GitHub](https://github.com/subrahmanyam-arunachalam/LLM-serve).*
+*Questions? Find me on [LinkedIn](https://linkedin.com/in/subrahmanyam-a) or open an issue on [GitHub](https://github.com/subrahmanyam2305/LLM-serve).*
 
 ---
 
@@ -893,6 +1228,9 @@ The code, benchmarks, and all the painful lessons learned are in the [LLM-serve 
 
 ### Documentation
 - [TensorRT-LLM Documentation](https://nvidia.github.io/TensorRT-LLM/)
+- [TensorRT-LLM Checkpoint Architecture](https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html)
+- [TensorRT-LLM Build Workflow](https://nvidia.github.io/TensorRT-LLM/architecture/workflow.html)
+- [NVIDIA/TensorRT-LLM Qwen Examples](https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/models/core/qwen)
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [Triton Inference Server](https://github.com/triton-inference-server/server)
 
